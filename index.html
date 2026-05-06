@@ -447,16 +447,20 @@ const STATE = {
 };
 
 // ============================================================
-// API
+// API  (GAS or Demo mode)
 // ============================================================
 function api(action, data) {
-  return new Promise(function(resolve, reject) {
-    const payload = Object.assign({ token: STATE.token }, data || {});
-    google.script.run
-      .withSuccessHandler(function(res) { resolve(res); })
-      .withFailureHandler(function(err) { reject(err); })
-      .processRequest(action, payload);
-  });
+  const payload = Object.assign({ token: STATE.token }, data || {});
+  const isGAS = typeof google !== 'undefined' && google.script && google.script.run;
+  if (isGAS) {
+    return new Promise(function(resolve, reject) {
+      google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject)
+        .processRequest(action, payload);
+    });
+  }
+  return Promise.resolve(localAPI(action, payload));
 }
 
 // ============================================================
@@ -1792,9 +1796,230 @@ function roleBadge(r) {
 }
 
 // ============================================================
+// LOCAL DEMO BACKEND (runs when not deployed on Google Apps Script)
+// ============================================================
+const DEMO_SESSIONS = {};
+function lsGet(k){try{return JSON.parse(localStorage.getItem('pm_'+k)||'[]');}catch(e){return[];}}
+function lsSet(k,v){localStorage.setItem('pm_'+k,JSON.stringify(v));}
+function demoId(){return 'id_'+Date.now().toString(36)+'_'+Math.random().toString(36).substr(2,8);}
+function demoNow(){return new Date().toISOString();}
+function demoHash(pw){let h=0;for(let i=0;i<pw.length;i++)h=Math.imul(31,h)+pw.charCodeAt(i)|0;return(h>>>0).toString(16);}
+function getDemoSession(token){return DEMO_SESSIONS[token]||null;}
+function demoAddNotif(userId,title,msg,type,relId,relType){
+  const n=lsGet('notifications');
+  n.push({id:demoId(),userId,title,message:msg,type:type||'info',isRead:false,relatedId:relId||'',relatedType:relType||'',createdAt:demoNow()});
+  lsSet('notifications',n);
+}
+
+function localAPI(action, d) {
+  const u = getDemoSession(d.token);
+  switch(action) {
+    case 'login': {
+      if(!d.email||!d.password) return {success:false,message:'Vui lòng nhập đầy đủ'};
+      const found = lsGet('users').find(function(u){return u.email===d.email&&u.password===demoHash(d.password)&&u.isActive===true;});
+      if(!found) return {success:false,message:'Email hoặc mật khẩu không đúng'};
+      const tok=demoId();
+      const sess={userId:found.id,name:found.name,email:found.email,role:found.role,department:found.department};
+      DEMO_SESSIONS[tok]=sess;
+      return {success:true,token:tok,user:sess};
+    }
+    case 'logout': if(d.token) delete DEMO_SESSIONS[d.token]; return {success:true};
+    case 'validateSession': {const s=getDemoSession(d.token);return s?{success:true,user:s}:{success:false};}
+    case 'getDashboardData': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      let projs=lsGet('projects'), tasks=lsGet('tasks');
+      if(u.role==='employee'){const pids=new Set(tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId).map(t=>t.projectId));projs=projs.filter(p=>pids.has(p.id)||p.managerId===u.userId);tasks=tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId);}
+      else if(u.role==='manager'){const pids=new Set(tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId).map(t=>t.projectId));projs=projs.filter(p=>pids.has(p.id)||p.managerId===u.userId);}
+      const today=new Date();
+      const pStats={total:projs.length,active:projs.filter(p=>p.status==='active').length,completed:projs.filter(p=>p.status==='completed').length,paused:projs.filter(p=>p.status==='paused').length};
+      const tStats={total:tasks.length,todo:tasks.filter(t=>t.status==='todo').length,inProgress:tasks.filter(t=>t.status==='in_progress').length,review:tasks.filter(t=>t.status==='review').length,completed:tasks.filter(t=>t.status==='completed').length,overdue:tasks.filter(t=>t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today).length};
+      const cStats={totalEstimated:tasks.reduce((s,t)=>s+(Number(t.estimatedCost)||0),0),totalActual:tasks.reduce((s,t)=>s+(Number(t.actualCost)||0),0)};
+      const monthlyData=[];for(let i=5;i>=0;i--){const dt=new Date();dt.setMonth(dt.getMonth()-i);const lbl=dt.toLocaleDateString('vi-VN',{month:'short',year:'numeric'});const cnt=tasks.filter(t=>{if(!t.updatedAt||t.status!=='completed')return false;const td=new Date(t.updatedAt);return td.getMonth()===dt.getMonth()&&td.getFullYear()===dt.getFullYear();}).length;monthlyData.push({month:lbl,completed:cnt});}
+      const urgentTasks=tasks.filter(t=>t.status!=='completed'&&t.dueDate).sort((a,b)=>new Date(a.dueDate)-new Date(b.dueDate)).slice(0,5).map(t=>Object.assign({},t,{isOverdue:new Date(t.dueDate)<today}));
+      const recentProjects=projs.sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,5);
+      return {success:true,data:{projectStats:pStats,taskStats:tStats,costStats:cStats,monthlyData,urgentTasks,recentProjects}};
+    }
+    case 'getProjects': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const allTasks=lsGet('tasks');
+      let projs=lsGet('projects');
+      if(u.role!=='admin'){const pids=new Set(allTasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId).map(t=>t.projectId));projs=projs.filter(p=>pids.has(p.id)||p.managerId===u.userId);}
+      const today=new Date();
+      projs=projs.map(p=>{const pt=allTasks.filter(t=>t.projectId===p.id);return Object.assign({},p,{taskCount:pt.length,completedTasks:pt.filter(t=>t.status==='completed').length,overdueTasks:pt.filter(t=>t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today).length});});
+      return {success:true,data:projs};
+    }
+    case 'getProjectById': {const p=lsGet('projects').find(p=>p.id===d.id);return p?{success:true,data:p}:{success:false,message:'Không tìm thấy'};}
+    case 'createProject': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      if(u.role==='employee') return {success:false,message:'Không có quyền'};
+      const projs=lsGet('projects');
+      if(d.code&&projs.find(p=>p.code===d.code)) return {success:false,message:'Mã dự án đã tồn tại'};
+      const id=demoId();const ts=demoNow();
+      projs.push({id,code:d.code||'',name:d.name,description:d.description||'',managerId:d.managerId||u.userId,managerName:d.managerName||u.name,startDate:d.startDate||'',endDate:d.endDate||'',status:d.status||'active',budget:Number(d.budget)||0,createdAt:ts,updatedAt:ts});
+      lsSet('projects',projs);
+      if(d.managerId&&d.managerId!==u.userId) demoAddNotif(d.managerId,'Dự án mới được giao','Bạn quản lý dự án: '+d.name,'project',id,'project');
+      return {success:true,id,message:'Tạo dự án thành công'};
+    }
+    case 'updateProject': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      if(u.role==='employee') return {success:false,message:'Không có quyền'};
+      const projs=lsGet('projects');const idx=projs.findIndex(p=>p.id===d.id);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      Object.assign(projs[idx],{code:d.code,name:d.name,description:d.description,managerId:d.managerId,managerName:d.managerName,startDate:d.startDate,endDate:d.endDate,status:d.status,budget:Number(d.budget)||0,updatedAt:demoNow()});
+      lsSet('projects',projs);return {success:true,message:'Cập nhật thành công'};
+    }
+    case 'deleteProject': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      if(u.role!=='admin') return {success:false,message:'Chỉ Admin'};
+      lsSet('projects',lsGet('projects').filter(p=>p.id!==d.id));
+      lsSet('tasks',lsGet('tasks').filter(t=>t.projectId!==d.id));
+      return {success:true,message:'Xóa thành công'};
+    }
+    case 'getTasks': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      let tasks=lsGet('tasks');
+      if(d.projectId) tasks=tasks.filter(t=>t.projectId===d.projectId);
+      if(u.role==='employee') tasks=tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId);
+      const today=new Date();
+      return {success:true,data:tasks.map(t=>Object.assign({},t,{isOverdue:t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today}))};
+    }
+    case 'getTaskById': {const t=lsGet('tasks').find(t=>t.id===d.id);return t?{success:true,data:t}:{success:false,message:'Không tìm thấy'};}
+    case 'createTask': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const tasks=lsGet('tasks');const id=demoId();const ts=demoNow();
+      tasks.push({id,projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description||'',assigneeId:d.assigneeId||'',assigneeName:d.assigneeName||'',reviewerId:d.reviewerId||'',reviewerName:d.reviewerName||'',startDate:d.startDate||'',dueDate:d.dueDate||'',status:d.status||'todo',priority:d.priority||'medium',estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,createdAt:ts,updatedAt:ts,createdBy:u.userId});
+      lsSet('tasks',tasks);
+      if(d.assigneeId&&d.assigneeId!==u.userId) demoAddNotif(d.assigneeId,'Công việc mới','Bạn được giao: "'+d.title+'"','task',id,'task');
+      if(d.reviewerId&&d.reviewerId!==u.userId&&d.reviewerId!==d.assigneeId) demoAddNotif(d.reviewerId,'Được phân công kiểm duyệt','Bạn kiểm duyệt: "'+d.title+'"','task',id,'task');
+      return {success:true,id,message:'Tạo công việc thành công'};
+    }
+    case 'updateTask': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const tasks=lsGet('tasks');const idx=tasks.findIndex(t=>t.id===d.id);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      const old=tasks[idx];
+      if(u.role==='employee'&&old.assigneeId!==u.userId&&old.reviewerId!==u.userId) return {success:false,message:'Không có quyền'};
+      Object.assign(tasks[idx],{projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description,assigneeId:d.assigneeId,assigneeName:d.assigneeName,reviewerId:d.reviewerId,reviewerName:d.reviewerName,startDate:d.startDate,dueDate:d.dueDate,status:d.status,priority:d.priority,estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,updatedAt:demoNow()});
+      lsSet('tasks',tasks);
+      if(d.status==='review'&&old.status!=='review'&&old.reviewerId) demoAddNotif(old.reviewerId,'Cần kiểm duyệt','"'+(d.title||old.title)+'" cần kiểm duyệt','task',d.id,'task');
+      return {success:true,message:'Cập nhật thành công'};
+    }
+    case 'deleteTask': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      if(u.role==='employee') return {success:false,message:'Không có quyền'};
+      lsSet('tasks',lsGet('tasks').filter(t=>t.id!==d.id));
+      return {success:true,message:'Xóa thành công'};
+    }
+    case 'getNotifications': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const all=lsGet('notifications').filter(n=>n.userId===u.userId).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt)).slice(0,50);
+      return {success:true,data:all,unreadCount:all.filter(n=>!n.isRead).length};
+    }
+    case 'markNotificationRead': {
+      const notifs=lsGet('notifications');const idx=notifs.findIndex(n=>n.id===d.id);
+      if(idx!==-1){notifs[idx].isRead=true;lsSet('notifications',notifs);}
+      return {success:true};
+    }
+    case 'markAllRead': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const notifs=lsGet('notifications').map(n=>n.userId===u.userId?Object.assign({},n,{isRead:true}):n);
+      lsSet('notifications',notifs);return {success:true};
+    }
+    case 'getUsers': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      return {success:true,data:lsGet('users').map(u=>({id:u.id,name:u.name,email:u.email,role:u.role,department:u.department,isActive:u.isActive,createdAt:u.createdAt}))};
+    }
+    case 'createUser': {
+      if(!u||u.role!=='admin') return {success:false,message:'Không có quyền'};
+      const users=lsGet('users');
+      if(users.find(x=>x.email===d.email)) return {success:false,message:'Email đã tồn tại'};
+      const id=demoId();
+      users.push({id,name:d.name,email:d.email,password:demoHash(d.password||'Password@123'),role:d.role||'employee',department:d.department||'',isActive:true,createdAt:demoNow()});
+      lsSet('users',users);return {success:true,id,message:'Tạo thành công! Mật khẩu: Password@123'};
+    }
+    case 'updateUser': {
+      if(!u||u.role!=='admin') return {success:false,message:'Không có quyền'};
+      const users=lsGet('users');const idx=users.findIndex(x=>x.id===d.id);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      Object.assign(users[idx],{name:d.name,email:d.email,role:d.role,department:d.department,isActive:d.isActive});
+      if(d.resetPassword) users[idx].password=demoHash('Password@123');
+      lsSet('users',users);return {success:true,message:'Cập nhật thành công'};
+    }
+    case 'deleteUser': {
+      if(!u||u.role!=='admin') return {success:false,message:'Không có quyền'};
+      if(d.id===u.userId) return {success:false,message:'Không thể xóa tài khoản hiện tại'};
+      lsSet('users',lsGet('users').filter(x=>x.id!==d.id));
+      return {success:true,message:'Xóa thành công'};
+    }
+    case 'updateProfile': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const users=lsGet('users');const idx=users.findIndex(x=>x.id===u.userId);
+      if(idx!==-1){users[idx].name=d.name;users[idx].department=d.department;lsSet('users',users);}
+      u.name=d.name;u.department=d.department;DEMO_SESSIONS[d.token]=u;
+      return {success:true,message:'Cập nhật thành công',user:u};
+    }
+    case 'changePassword': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const users=lsGet('users');const idx=users.findIndex(x=>x.id===u.userId);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      if(users[idx].password!==demoHash(d.currentPassword)) return {success:false,message:'Mật khẩu hiện tại không đúng'};
+      if(!d.newPassword||d.newPassword.length<6) return {success:false,message:'Mật khẩu mới tối thiểu 6 ký tự'};
+      users[idx].password=demoHash(d.newPassword);lsSet('users',users);
+      return {success:true,message:'Đổi mật khẩu thành công'};
+    }
+    default: return {success:false,message:'Unknown action'};
+  }
+}
+
+function seedDemoData() {
+  if (localStorage.getItem('pm_seeded')) return;
+  const adminId=demoId(),mgrId=demoId(),empId=demoId();
+  lsSet('users',[
+    {id:adminId,name:'Administrator',email:'admin@company.com',password:demoHash('Admin@123'),role:'admin',department:'Ban Giám đốc',isActive:true,createdAt:demoNow()},
+    {id:mgrId,name:'Nguyễn Văn Manager',email:'manager@company.com',password:demoHash('Manager@123'),role:'manager',department:'Phòng Kỹ thuật',isActive:true,createdAt:demoNow()},
+    {id:empId,name:'Trần Thị Employee',email:'employee@company.com',password:demoHash('Employee@123'),role:'employee',department:'Phòng Kỹ thuật',isActive:true,createdAt:demoNow()}
+  ]);
+  const p1=demoId(),p2=demoId(),p3=demoId();
+  const past=n=>{const d=new Date();d.setDate(d.getDate()-n);return d.toISOString().split('T')[0];};
+  const future=n=>{const d=new Date();d.setDate(d.getDate()+n);return d.toISOString().split('T')[0];};
+  lsSet('projects',[
+    {id:p1,code:'DA001',name:'Website Thương mại điện tử',description:'Xây dựng nền tảng bán hàng B2C',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2025-01-01',endDate:'2025-06-30',status:'active',budget:150000000,createdAt:demoNow(),updatedAt:demoNow()},
+    {id:p2,code:'DA002',name:'Ứng dụng Mobile CRM',description:'Quản lý quan hệ khách hàng mobile',managerId:adminId,managerName:'Administrator',startDate:'2025-02-01',endDate:'2025-09-30',status:'active',budget:80000000,createdAt:demoNow(),updatedAt:demoNow()},
+    {id:p3,code:'DA003',name:'Hệ thống ERP Nội bộ',description:'Triển khai ERP toàn công ty',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2024-06-01',endDate:'2024-12-31',status:'completed',budget:200000000,createdAt:demoNow(),updatedAt:demoNow()}
+  ]);
+  const t1=demoNow();
+  lsSet('tasks',[
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Thiết kế UI/UX trang chủ',description:'Thiết kế theo mockup đã duyệt',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(30),dueDate:past(5),status:'completed',priority:'high',estimatedCost:5000000,actualCost:4800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Phát triển API sản phẩm',description:'RESTful API module sản phẩm',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(20),dueDate:future(10),status:'in_progress',priority:'high',estimatedCost:8000000,actualCost:3500000,progress:65,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Tích hợp cổng thanh toán',description:'Kết nối VNPay và MoMo',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:past(10),dueDate:past(2),status:'review',priority:'high',estimatedCost:6000000,actualCost:6200000,progress:95,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'SEO & Tối ưu hiệu suất',description:'Tối ưu tốc độ và SEO on-page',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(5),dueDate:future(25),status:'todo',priority:'medium',estimatedCost:3000000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Viết tài liệu kỹ thuật',description:'Tài liệu API và vận hành',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:'',reviewerName:'',startDate:past(15),dueDate:past(3),status:'in_progress',priority:'low',estimatedCost:2000000,actualCost:1000000,progress:40,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p2,projectName:'Mobile CRM',title:'Phân tích yêu cầu nghiệp vụ',description:'Họp stakeholder, lập tài liệu yêu cầu',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:past(25),dueDate:past(10),status:'completed',priority:'high',estimatedCost:4000000,actualCost:3800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p2,projectName:'Mobile CRM',title:'Thiết kế database',description:'Mô hình dữ liệu và ERD',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(12),dueDate:future(8),status:'in_progress',priority:'high',estimatedCost:5000000,actualCost:2000000,progress:50,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p2,projectName:'Mobile CRM',title:'Màn hình danh sách khách hàng',description:'Trang quản lý và tìm kiếm KH',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(3),dueDate:future(20),status:'todo',priority:'medium',estimatedCost:7000000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p3,projectName:'ERP Nội bộ',title:'Module kế toán',description:'Quản lý kế toán tổng hợp',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:'2024-06-01',dueDate:'2024-12-15',status:'completed',priority:'high',estimatedCost:50000000,actualCost:48000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p3,projectName:'ERP Nội bộ',title:'Module nhân sự & chấm công',description:'Quản lý nhân sự toàn công ty',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:'2024-08-01',dueDate:'2024-12-31',status:'completed',priority:'medium',estimatedCost:30000000,actualCost:31000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId}
+  ]);
+  lsSet('notifications',[
+    {id:demoId(),userId:empId,title:'Công việc mới được giao',message:'Bạn được giao: "Phát triển API sản phẩm" trong Website TMĐT',type:'task',isRead:false,relatedId:'',relatedType:'task',createdAt:demoNow()},
+    {id:demoId(),userId:mgrId,title:'Công việc cần kiểm duyệt',message:'"Tích hợp cổng thanh toán" cần kiểm duyệt',type:'task',isRead:false,relatedId:'',relatedType:'task',createdAt:demoNow()},
+    {id:demoId(),userId:adminId,title:'Dự án mới',message:'Bạn quản lý dự án: Ứng dụng Mobile CRM',type:'project',isRead:true,relatedId:p2,relatedType:'project',createdAt:demoNow()}
+  ]);
+  localStorage.setItem('pm_seeded','1');
+}
+
+// ============================================================
 // STARTUP
 // ============================================================
 (async function() {
+  const isGAS = typeof google !== 'undefined' && google.script && google.script.run;
+  if (!isGAS) {
+    seedDemoData();
+    // Show demo banner
+    document.body.insertAdjacentHTML('afterbegin', '<div style="background:#f59e0b;color:#fff;text-align:center;padding:8px;font-size:13px;font-weight:600;position:fixed;top:0;left:0;right:0;z-index:99999"><i class="fas fa-flask"></i> CHẾ ĐỘ DEMO — Dữ liệu lưu trên trình duyệt (localStorage). <a href="#" onclick="if(confirm(\'Xóa toàn bộ dữ liệu demo?\')){{localStorage.clear();location.reload();}}return false;" style="color:#fff;text-decoration:underline;margin-left:8px">Đặt lại dữ liệu</a></div>');
+    document.getElementById('app').style.marginTop = '36px';
+    document.getElementById('login-page').style.paddingTop = '56px';
+  }
   const valid = await checkSession();
   if (valid) {
     initApp();
