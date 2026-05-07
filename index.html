@@ -1636,12 +1636,54 @@ function filterUsers() {
     </tbody></table></div></div>`;
 }
 
-function openUserModal(id) {
+async function openUserModal(id) {
   const isEdit = !!id;
   const user = isEdit ? STATE.users.find(function(u){return u.id===id;}) : null;
   const managedProjs = STATE.projects.filter(function(p) {
     return STATE.user.role === 'admin' || p.userProjectRole === 'owner';
   });
+
+  // For edit mode: fetch existing memberships of the user being edited across all managed projects
+  var userMemberships = {}; // projectId → projectRole ('' if not a member)
+  if (isEdit && managedProjs.length > 0) {
+    try {
+      var results = await Promise.all(
+        managedProjs.map(function(p) { return api('getProjectMembers', { projectId: p.id }); })
+      );
+      managedProjs.forEach(function(p, i) {
+        var members = (results[i].data || results[i].members || []);
+        var entry = members.find(function(m) { return m.userId === id; });
+        userMemberships[p.id] = entry ? entry.projectRole : '';
+      });
+    } catch(e) {}
+  }
+
+  // Build project permission rows for edit mode
+  var editProjSection = '';
+  if (isEdit) {
+    var projRows = managedProjs.length === 0
+      ? '<div style="font-size:12px;color:var(--text-muted);padding:8px;background:var(--bg);border-radius:6px"><i class="fas fa-info-circle"></i> Chưa có dự án nào để phân quyền</div>'
+      : `<div style="max-height:200px;overflow-y:auto;padding-right:4px">${managedProjs.map(function(p) {
+          var cur = userMemberships[p.id] || '';
+          return `<div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+            <span style="flex:1;font-size:13px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(p.name)}">${esc(p.name)}</span>
+            <select class="form-control" style="width:155px;flex-shrink:0;font-size:12px" data-proj-id="${p.id}" data-orig-role="${cur}">
+              <option value="" ${cur===''?'selected':''}>Không tham gia</option>
+              <option value="owner" ${cur==='owner'?'selected':''}>Quản lý dự án</option>
+              <option value="member" ${cur==='member'?'selected':''}>Thành viên</option>
+              <option value="viewer" ${cur==='viewer'?'selected':''}>Người xem</option>
+            </select>
+          </div>`;
+        }).join('')}</div>`;
+    editProjSection = `
+    <div style="margin-top:4px;border-top:1px solid var(--border);padding-top:16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <i class="fas fa-folder-plus" style="color:var(--primary)"></i>
+        <span style="font-size:13px;font-weight:600;color:var(--text)">Phân quyền dự án</span>
+      </div>
+      ${projRows}
+    </div>`;
+  }
 
   openModal(`${isEdit?'Chỉnh sửa':'Thêm'} người dùng`, `
     <div class="form-row">
@@ -1682,7 +1724,8 @@ function openUserModal(id) {
     </div>
     <div style="padding:12px;background:var(--warning-light);border-radius:6px;font-size:12px;color:#92400e">
       <i class="fas fa-key"></i> <label><input type="checkbox" id="f-user-reset"> Reset mật khẩu về mặc định (Password@123)</label>
-    </div>` : `
+    </div>` : ''}
+    ${isEdit ? editProjSection : `
     <div style="margin-top:4px;border-top:1px solid var(--border);padding-top:16px">
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
         <i class="fas fa-folder-plus" style="color:var(--primary)"></i>
@@ -1749,6 +1792,28 @@ async function saveUser(id) {
           const projRole = projRoleEl ? projRoleEl.value : 'member';
           await api('addProjectMember', { projectId: projEl.value, userId: res.id, projectRole: projRole });
           showToast('info', '', 'Đã thêm người dùng vào dự án');
+        }
+      } else {
+        // Apply project role changes: add / update / remove per project
+        const projSelects = document.querySelectorAll('[data-proj-id]');
+        const projChanges = [];
+        projSelects.forEach(function(sel) {
+          const projectId = sel.dataset.projId;
+          const newRole = sel.value;
+          const origRole = sel.dataset.origRole;
+          if (newRole !== origRole) projChanges.push({ projectId, newRole, origRole });
+        });
+        if (projChanges.length > 0) {
+          await Promise.all(projChanges.map(function(c) {
+            if (!c.newRole) {
+              return api('removeProjectMember', { projectId: c.projectId, userId: id });
+            } else if (!c.origRole) {
+              return api('addProjectMember', { projectId: c.projectId, userId: id, projectRole: c.newRole });
+            } else {
+              return api('updateProjectMember', { projectId: c.projectId, userId: id, projectRole: c.newRole });
+            }
+          }));
+          showToast('info', '', 'Đã cập nhật phân quyền dự án');
         }
       }
       showToast('success','Thành công', res.message);
