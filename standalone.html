@@ -1359,6 +1359,14 @@ function renderTasksUI() {
             <option value="medium">Trung bình</option>
             <option value="low">Thấp</option>
           </select>
+          <select class="filter-select" id="task-filter-type" onchange="filterTasks()">
+            <option value="">Tất cả loại</option>
+            <option value="epic">Epic</option>
+            <option value="task">Task</option>
+            <option value="user_story">User Story</option>
+            <option value="bug">Bug</option>
+            <option value="sub_task">Sub-task</option>
+          </select>
           <select class="filter-select" id="task-filter-project" onchange="filterTasks()">
             <option value="">Tất cả dự án</option>
             ${STATE.projects.map(function(p){return`<option value="${p.id}">${esc(p.name)}</option>`;}).join('')}
@@ -1376,13 +1384,15 @@ function filterTasks() {
   const q = (document.getElementById('task-search')||{value:''}).value.toLowerCase();
   const status = (document.getElementById('task-filter-status')||{value:''}).value;
   const priority = (document.getElementById('task-filter-priority')||{value:''}).value;
+  const typeFilter = (document.getElementById('task-filter-type')||{value:''}).value;
   const projectId = (document.getElementById('task-filter-project')||{value:''}).value;
   let filtered = STATE.tasks.filter(function(t) {
     const mQ = !q || String(t.title||'').toLowerCase().includes(q) || String(t.assigneeName||'').toLowerCase().includes(q) || String(t.projectName||'').toLowerCase().includes(q);
     const mS = !status || t.status === status;
     const mP = !priority || t.priority === priority;
+    const mT = !typeFilter || (t.issueType || 'task') === typeFilter;
     const mPr = !projectId || t.projectId === projectId;
-    return mQ && mS && mP && mPr;
+    return mQ && mS && mP && mT && mPr;
   });
 
   const container = document.getElementById('tasks-container');
@@ -1401,10 +1411,25 @@ function filterTasks() {
   const canDelete = function(t) {
     return STATE.user.role === 'admin' || STATE.myProjectRoles[t.projectId] === 'owner';
   };
+  // Build a quick lookup for parent titles
+  const taskTitleMap = {};
+  STATE.tasks.forEach(function(t) { taskTitleMap[t.id] = t.title; });
+
   container.innerHTML = `<div class="card"><div class="table-wrap"><table>
     <thead><tr><th>Công việc</th><th>Dự án</th><th>Thực hiện</th><th>Bắt đầu</th><th>Hạn</th><th>Ưu tiên</th><th>Tiến độ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
-    <tbody>${filtered.map(function(t){return`<tr>
-      <td><div style="font-weight:600;max-width:200px">${esc(t.title)}</div>${t.reviewerName?`<div style="font-size:11px;color:var(--text-muted)">Kiểm duyệt: ${esc(t.reviewerName)}</div>`:''}</td>
+    <tbody>${filtered.map(function(t){
+      const parentTitle = t.parentId ? taskTitleMap[t.parentId] || '' : '';
+      return`<tr>
+      <td>
+        <div style="display:flex;align-items:flex-start;gap:6px">
+          <div style="padding-top:2px;flex-shrink:0">${issueTypeBadge(t.issueType||'task')}</div>
+          <div>
+            <div style="font-weight:600;max-width:180px">${esc(t.title)}</div>
+            ${parentTitle?`<div style="font-size:11px;color:var(--text-muted)">↳ ${esc(parentTitle)}</div>`:''}
+            ${t.reviewerName?`<div style="font-size:11px;color:var(--text-muted)">Duyệt: ${esc(t.reviewerName)}</div>`:''}
+          </div>
+        </div>
+      </td>
       <td><span style="font-size:12px;color:var(--primary);font-weight:600">${esc(t.projectName||'—')}</span></td>
       <td>${esc(t.assigneeName||'—')}</td>
       <td>${fmtDate(t.startDate)||'—'}</td>
@@ -1428,6 +1453,23 @@ function openTaskModal(id, preProjectId) {
   const task = isEdit ? STATE.tasks.find(function(t){return t.id===id;}) : null;
   const activeUsers = STATE.users.filter(function(u){return u.isActive;});
 
+  // Pre-compute parent dropdown for initial render
+  const initIssueType = task?.issueType || 'task';
+  const initProjId = task?.projectId || preProjectId || (STATE.projects[0]?.id || '');
+  const validParentTypesMap = { epic:[], task:['epic'], user_story:['epic'], bug:['epic'], sub_task:['task','user_story','bug'] };
+  const initParentTypes = validParentTypesMap[initIssueType] || [];
+  const showParent = initParentTypes.length > 0;
+  const parentRequired = initIssueType === 'task' || initIssueType === 'user_story' || initIssueType === 'sub_task';
+  const itLabel = { epic:'Epic', task:'Task', user_story:'Story', bug:'Bug', sub_task:'Sub-task' };
+  const initParentCandidates = STATE.tasks.filter(function(t) {
+    return t.projectId === initProjId && initParentTypes.indexOf(t.issueType || 'task') !== -1;
+  });
+  const parentPlaceholder = initIssueType === 'bug' ? '-- Không thuộc Epic nào --' : '-- Chọn công việc cha --';
+  const initParentHtml = `<option value="">${parentPlaceholder}</option>` +
+    initParentCandidates.map(function(t) {
+      return `<option value="${t.id}" ${t.id === (task?.parentId||'') ? 'selected':''}>[${itLabel[t.issueType||'task']||'Task'}] ${esc(t.title)}</option>`;
+    }).join('');
+
   openModal(`${isEdit?'Chỉnh sửa':'Tạo'} công việc`, `
     <div class="form-group">
       <label>Tên công việc <span style="color:var(--danger)">*</span></label>
@@ -1435,10 +1477,26 @@ function openTaskModal(id, preProjectId) {
     </div>
     <div class="form-group">
       <label>Dự án <span style="color:var(--danger)">*</span></label>
-      <select class="form-control" id="f-task-project">
+      <select class="form-control" id="f-task-project" onchange="updateTaskParentOptions()">
         <option value="">-- Chọn dự án --</option>
         ${STATE.projects.map(function(p){const sel=(task?.projectId===p.id)||(preProjectId===p.id);return`<option value="${p.id}" data-name="${esc(p.name)}" ${sel?'selected':''}>${esc(p.name)}</option>`;}).join('')}
       </select>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Loại công việc <span style="color:var(--danger)">*</span></label>
+        <select class="form-control" id="f-task-issue-type" onchange="updateTaskParentOptions()">
+          <option value="epic" ${initIssueType==='epic'?'selected':''}>Epic</option>
+          <option value="task" ${initIssueType==='task'?'selected':''}>Task</option>
+          <option value="user_story" ${initIssueType==='user_story'?'selected':''}>User Story</option>
+          <option value="bug" ${initIssueType==='bug'?'selected':''}>Bug</option>
+          <option value="sub_task" ${initIssueType==='sub_task'?'selected':''}>Sub-task</option>
+        </select>
+      </div>
+      <div class="form-group" id="f-task-parent-wrap" ${showParent?'':'style="display:none"'}>
+        <label>${parentRequired?'Công việc cha <span style="color:var(--danger)">*</span>':'Epic cha <span style="font-size:11px;color:var(--text-muted)">(tùy chọn)</span>'}</label>
+        <select class="form-control" id="f-task-parent">${initParentHtml}</select>
+      </div>
     </div>
     <div class="form-group">
       <label>Mô tả</label>
@@ -1517,9 +1575,20 @@ async function saveTask(id) {
   const projEl = document.getElementById('f-task-project');
   const assEl = document.getElementById('f-task-assignee');
   const revEl = document.getElementById('f-task-reviewer');
+  const typeEl = document.getElementById('f-task-issue-type');
+  const parentEl = document.getElementById('f-task-parent');
   if (!projEl.value) { showToast('warning','Lỗi','Vui lòng chọn dự án'); return; }
   const title = document.getElementById('f-task-title').value.trim();
   if (!title) { showToast('warning','Lỗi','Vui lòng nhập tên công việc'); return; }
+  const issueType = typeEl ? typeEl.value || 'task' : 'task';
+  const parentId = parentEl ? parentEl.value || '' : '';
+  // Validate required parent
+  const requiresParent = ['task','user_story','sub_task'].indexOf(issueType) !== -1;
+  if (requiresParent && !parentId) {
+    const labels = { task:'Task phải thuộc một Epic', user_story:'User Story phải thuộc một Epic', sub_task:'Sub-task phải chọn Task/Story/Bug cha' };
+    showToast('warning','Lỗi', labels[issueType]);
+    return;
+  }
 
   const data = {
     title,
@@ -1536,7 +1605,9 @@ async function saveTask(id) {
     status: document.getElementById('f-task-status').value,
     estimatedCost: document.getElementById('f-task-est-cost').value,
     actualCost: document.getElementById('f-task-act-cost').value,
-    progress: document.getElementById('f-task-progress').value
+    progress: document.getElementById('f-task-progress').value,
+    issueType,
+    parentId
   };
 
   try {
@@ -2188,6 +2259,49 @@ function priorityBadge(p) {
   return `<span class="badge-status badge-${p}">${map[p]||p}</span>`;
 }
 
+function issueTypeBadge(type) {
+  const map = {
+    epic:       { label:'Epic',     bg:'#ede9fe', color:'#7c3aed' },
+    task:       { label:'Task',     bg:'#dbeafe', color:'#1d4ed8' },
+    user_story: { label:'Story',    bg:'#cffafe', color:'#0e7490' },
+    bug:        { label:'Bug',      bg:'#fee2e2', color:'#dc2626' },
+    sub_task:   { label:'Sub-task', bg:'#f3f4f6', color:'#4b5563' }
+  };
+  const m = map[type] || map['task'];
+  return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${m.bg};color:${m.color};white-space:nowrap">${m.label}</span>`;
+}
+
+function updateTaskParentOptions(currentParentId) {
+  const typeEl = document.getElementById('f-task-issue-type');
+  const projEl = document.getElementById('f-task-project');
+  const parentWrap = document.getElementById('f-task-parent-wrap');
+  const parentSel = document.getElementById('f-task-parent');
+  if (!typeEl || !projEl || !parentWrap || !parentSel) return;
+  const type = typeEl.value;
+  const projId = projEl.value;
+  const validParentTypes = { epic:[], task:['epic'], user_story:['epic'], bug:['epic'], sub_task:['task','user_story','bug'] };
+  const parentTypes = validParentTypes[type] || [];
+  if (parentTypes.length === 0) {
+    parentWrap.style.display = 'none';
+    parentSel.value = '';
+    return;
+  }
+  parentWrap.style.display = '';
+  const required = type === 'task' || type === 'user_story' || type === 'sub_task';
+  const labelEl = parentWrap.querySelector('label');
+  if (labelEl) labelEl.innerHTML = required ? 'Công việc cha <span style="color:var(--danger)">*</span>' : 'Epic cha <span style="font-size:11px;color:var(--text-muted)">(tùy chọn)</span>';
+  const itLabel = { epic:'Epic', task:'Task', user_story:'Story', bug:'Bug', sub_task:'Sub-task' };
+  const savedVal = currentParentId !== undefined ? currentParentId : parentSel.value;
+  const candidates = STATE.tasks.filter(function(t) {
+    return t.projectId === projId && parentTypes.indexOf(t.issueType || 'task') !== -1;
+  });
+  const placeholder = type === 'bug' ? '-- Không thuộc Epic nào --' : '-- Chọn công việc cha --';
+  parentSel.innerHTML = `<option value="">${placeholder}</option>` +
+    candidates.map(function(t) {
+      return `<option value="${t.id}" ${t.id === savedVal ? 'selected':''}>[${itLabel[t.issueType||'task']||'Task'}] ${esc(t.title)}</option>`;
+    }).join('');
+}
+
 function roleBadge(r) {
   const map = { admin:'Admin', manager:'Quản lý', employee:'Nhân viên' };
   return `<span class="badge-status badge-${r}">${map[r]||r}</span>`;
@@ -2331,8 +2445,15 @@ function localAPI(action, d) {
     case 'createTask': {
       if(!u) return {success:false,message:'Hết phiên'};
       {const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===d.projectId&&m.userId===u.userId);if(u.role!=='admin'&&(!me||me.projectRole==='viewer')) return {success:false,message:'Bạn không có quyền tạo công việc trong dự án này'};}
-      const tasks=lsGet('tasks');const id=demoId();const ts=demoNow();
-      tasks.push({id,projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description||'',assigneeId:d.assigneeId||'',assigneeName:d.assigneeName||'',reviewerId:d.reviewerId||'',reviewerName:d.reviewerName||'',startDate:d.startDate||'',dueDate:d.dueDate||'',status:d.status||'todo',priority:d.priority||'medium',estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,createdAt:ts,updatedAt:ts,createdBy:u.userId});
+      const issueType=d.issueType||'task';
+      const allTasks=lsGet('tasks');
+      const parentTask=d.parentId?allTasks.find(t=>t.id===d.parentId):null;
+      if(issueType==='epic'&&parentTask) return {success:false,message:'Epic không được có công việc cha'};
+      if((issueType==='task'||issueType==='user_story')&&(!parentTask||(parentTask.issueType||'task')!=='epic')) return {success:false,message:'Task/User Story phải thuộc một Epic'};
+      if(issueType==='bug'&&parentTask&&(parentTask.issueType||'task')!=='epic') return {success:false,message:'Bug chỉ có thể thuộc Epic'};
+      if(issueType==='sub_task'&&(!parentTask||['task','user_story','bug'].indexOf(parentTask.issueType||'task')===-1)) return {success:false,message:'Sub-task phải thuộc Task, User Story hoặc Bug'};
+      const tasks=allTasks;const id=demoId();const ts=demoNow();
+      tasks.push({id,projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description||'',assigneeId:d.assigneeId||'',assigneeName:d.assigneeName||'',reviewerId:d.reviewerId||'',reviewerName:d.reviewerName||'',startDate:d.startDate||'',dueDate:d.dueDate||'',status:d.status||'todo',priority:d.priority||'medium',estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,createdAt:ts,updatedAt:ts,createdBy:u.userId,issueType,parentId:d.parentId||''});
       lsSet('tasks',tasks);
       if(d.assigneeId&&d.assigneeId!==u.userId) demoAddNotif(d.assigneeId,'Công việc mới','Bạn được giao: "'+d.title+'"','task',id,'task');
       if(d.reviewerId&&d.reviewerId!==u.userId&&d.reviewerId!==d.assigneeId) demoAddNotif(d.reviewerId,'Được phân công kiểm duyệt','Bạn kiểm duyệt: "'+d.title+'"','task',id,'task');
@@ -2344,16 +2465,22 @@ function localAPI(action, d) {
       if(idx===-1) return {success:false,message:'Không tìm thấy'};
       const old=tasks[idx];
       if(u.role!=='admin'){const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===old.projectId&&m.userId===u.userId);const pr=me?me.projectRole:null;if(!pr) return {success:false,message:'Không có quyền truy cập dự án'};if(pr==='viewer') return {success:false,message:'Bạn chỉ có quyền xem'};if(pr==='member'&&old.assigneeId!==u.userId&&old.reviewerId!==u.userId) return {success:false,message:'Thành viên chỉ được sửa công việc được phân công'};}
-      Object.assign(tasks[idx],{projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description,assigneeId:d.assigneeId,assigneeName:d.assigneeName,reviewerId:d.reviewerId,reviewerName:d.reviewerName,startDate:d.startDate,dueDate:d.dueDate,status:d.status,priority:d.priority,estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,updatedAt:demoNow()});
+      Object.assign(tasks[idx],{projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description,assigneeId:d.assigneeId,assigneeName:d.assigneeName,reviewerId:d.reviewerId,reviewerName:d.reviewerName,startDate:d.startDate,dueDate:d.dueDate,status:d.status,priority:d.priority,estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,updatedAt:demoNow(),issueType:d.issueType||old.issueType||'task',parentId:d.parentId||old.parentId||''});
       lsSet('tasks',tasks);
       if(d.status==='review'&&old.status!=='review'&&old.reviewerId) demoAddNotif(old.reviewerId,'Cần kiểm duyệt','"'+(d.title||old.title)+'" cần kiểm duyệt','task',d.id,'task');
       return {success:true,message:'Cập nhật thành công'};
     }
     case 'deleteTask': {
       if(!u) return {success:false,message:'Hết phiên'};
-      if(u.role!=='admin'){const tsk=lsGet('tasks').find(t=>t.id===d.id);const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===(tsk?tsk.projectId:'')&&m.userId===u.userId);if(!me||me.projectRole!=='owner') return {success:false,message:'Chỉ Quản lý dự án mới có thể xóa công việc'};}
-      lsSet('tasks',lsGet('tasks').filter(t=>t.id!==d.id));
-      return {success:true,message:'Xóa thành công'};
+      const allTasks=lsGet('tasks');const tsk=allTasks.find(t=>t.id===d.id);
+      if(!tsk) return {success:false,message:'Không tìm thấy'};
+      if(u.role!=='admin'){const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===tsk.projectId&&m.userId===u.userId);if(!me||me.projectRole!=='owner') return {success:false,message:'Chỉ Quản lý dự án mới có thể xóa công việc'};}
+      // Cascade: collect id + children + grandchildren
+      const toDelete=new Set([d.id]);
+      allTasks.filter(t=>t.parentId===d.id).forEach(c=>{toDelete.add(c.id);allTasks.filter(t=>t.parentId===c.id).forEach(gc=>toDelete.add(gc.id));});
+      lsSet('tasks',allTasks.filter(t=>!toDelete.has(t.id)));
+      const cnt=toDelete.size;
+      return {success:true,message:cnt>1?'Đã xóa '+cnt+' công việc':'Xóa thành công'};
     }
     case 'getNotifications': {
       if(!u) return {success:false,message:'Hết phiên'};
@@ -2433,17 +2560,34 @@ function seedDemoData() {
     {id:p3,code:'DA003',name:'Hệ thống ERP Nội bộ',description:'Triển khai ERP toàn công ty',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2024-06-01',endDate:'2024-12-31',status:'completed',budget:200000000,createdAt:demoNow(),updatedAt:demoNow()}
   ]);
   const t1=demoNow();
+  // Pre-declare Epic/Task IDs that are referenced by children
+  const ep1=demoId(),ep2=demoId(),ep3=demoId(),ep4=demoId(),ep5=demoId(),ep6=demoId();
+  const tk1=demoId(),tk2=demoId(),tk3=demoId(),tk4=demoId(),tk5=demoId();
   lsSet('tasks',[
-    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Thiết kế UI/UX trang chủ',description:'Thiết kế theo mockup đã duyệt',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(30),dueDate:past(5),status:'completed',priority:'high',estimatedCost:5000000,actualCost:4800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:mgrId},
-    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Phát triển API sản phẩm',description:'RESTful API module sản phẩm',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(20),dueDate:future(10),status:'in_progress',priority:'high',estimatedCost:8000000,actualCost:3500000,progress:65,createdAt:t1,updatedAt:t1,createdBy:mgrId},
-    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Tích hợp cổng thanh toán',description:'Kết nối VNPay và MoMo',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:past(10),dueDate:past(2),status:'review',priority:'high',estimatedCost:6000000,actualCost:6200000,progress:95,createdAt:t1,updatedAt:t1,createdBy:adminId},
-    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'SEO & Tối ưu hiệu suất',description:'Tối ưu tốc độ và SEO on-page',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(5),dueDate:future(25),status:'todo',priority:'medium',estimatedCost:3000000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
-    {id:demoId(),projectId:p1,projectName:'Website TMĐT',title:'Viết tài liệu kỹ thuật',description:'Tài liệu API và vận hành',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:'',reviewerName:'',startDate:past(15),dueDate:past(3),status:'in_progress',priority:'low',estimatedCost:2000000,actualCost:1000000,progress:40,createdAt:t1,updatedAt:t1,createdBy:adminId},
-    {id:demoId(),projectId:p2,projectName:'Mobile CRM',title:'Phân tích yêu cầu nghiệp vụ',description:'Họp stakeholder, lập tài liệu yêu cầu',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:past(25),dueDate:past(10),status:'completed',priority:'high',estimatedCost:4000000,actualCost:3800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
-    {id:demoId(),projectId:p2,projectName:'Mobile CRM',title:'Thiết kế database',description:'Mô hình dữ liệu và ERD',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(12),dueDate:future(8),status:'in_progress',priority:'high',estimatedCost:5000000,actualCost:2000000,progress:50,createdAt:t1,updatedAt:t1,createdBy:adminId},
-    {id:demoId(),projectId:p2,projectName:'Mobile CRM',title:'Màn hình danh sách khách hàng',description:'Trang quản lý và tìm kiếm KH',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(3),dueDate:future(20),status:'todo',priority:'medium',estimatedCost:7000000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
-    {id:demoId(),projectId:p3,projectName:'ERP Nội bộ',title:'Module kế toán',description:'Quản lý kế toán tổng hợp',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:'2024-06-01',dueDate:'2024-12-15',status:'completed',priority:'high',estimatedCost:50000000,actualCost:48000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
-    {id:demoId(),projectId:p3,projectName:'ERP Nội bộ',title:'Module nhân sự & chấm công',description:'Quản lý nhân sự toàn công ty',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:'2024-08-01',dueDate:'2024-12-31',status:'completed',priority:'medium',estimatedCost:30000000,actualCost:31000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId}
+    // ── Project 1: Website TMĐT ──────────────────────────────────────────
+    {id:ep1,projectId:p1,projectName:'Website TMĐT',issueType:'epic',parentId:'',title:'Module Frontend',description:'Nhóm công việc giao diện người dùng',assigneeId:'',assigneeName:'',reviewerId:'',reviewerName:'',startDate:past(30),dueDate:future(30),status:'in_progress',priority:'high',estimatedCost:10000000,actualCost:6300000,progress:60,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:ep2,projectId:p1,projectName:'Website TMĐT',issueType:'epic',parentId:'',title:'Module Backend & Tích hợp',description:'API, cơ sở dữ liệu và tích hợp bên thứ ba',assigneeId:'',assigneeName:'',reviewerId:'',reviewerName:'',startDate:past(25),dueDate:future(20),status:'in_progress',priority:'high',estimatedCost:20000000,actualCost:10200000,progress:55,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:tk1,projectId:p1,projectName:'Website TMĐT',issueType:'task',parentId:ep1,title:'Thiết kế UI/UX trang chủ',description:'Thiết kế theo mockup đã duyệt',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(30),dueDate:past(5),status:'completed',priority:'high',estimatedCost:5000000,actualCost:4800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',issueType:'sub_task',parentId:tk1,title:'Wireframe trang danh mục sản phẩm',description:'Wireframe chi tiết cho trang danh mục',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:past(28),dueDate:past(20),status:'completed',priority:'medium',estimatedCost:1000000,actualCost:900000,progress:100,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',issueType:'task',parentId:ep1,title:'SEO & Tối ưu hiệu suất',description:'Tối ưu tốc độ và SEO on-page',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(5),dueDate:future(25),status:'todo',priority:'medium',estimatedCost:3000000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:tk2,projectId:p1,projectName:'Website TMĐT',issueType:'task',parentId:ep2,title:'Phát triển API sản phẩm',description:'RESTful API module sản phẩm',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(20),dueDate:future(10),status:'in_progress',priority:'high',estimatedCost:8000000,actualCost:3500000,progress:65,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',issueType:'sub_task',parentId:tk2,title:'Viết unit test API sản phẩm',description:'Đảm bảo coverage >= 80%',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:past(5),dueDate:future(5),status:'in_progress',priority:'medium',estimatedCost:1500000,actualCost:500000,progress:30,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',issueType:'task',parentId:ep2,title:'Tích hợp cổng thanh toán',description:'Kết nối VNPay và MoMo',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:past(10),dueDate:past(2),status:'review',priority:'high',estimatedCost:6000000,actualCost:6200000,progress:95,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p1,projectName:'Website TMĐT',issueType:'bug',parentId:ep2,title:'Lỗi timeout khi thanh toán MoMo',description:'Giao dịch bị timeout sau 30 giây ở môi trường prod',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(3),dueDate:future(2),status:'in_progress',priority:'high',estimatedCost:0,actualCost:0,progress:20,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    // ── Project 2: Mobile CRM ────────────────────────────────────────────
+    {id:ep3,projectId:p2,projectName:'Mobile CRM',issueType:'epic',parentId:'',title:'Giai đoạn 1 – Khởi tạo & Phân tích',description:'Phân tích yêu cầu và thiết kế kiến trúc',assigneeId:'',assigneeName:'',reviewerId:'',reviewerName:'',startDate:past(25),dueDate:past(5),status:'completed',priority:'high',estimatedCost:9000000,actualCost:8800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:ep4,projectId:p2,projectName:'Mobile CRM',issueType:'epic',parentId:'',title:'Giai đoạn 2 – Phát triển tính năng',description:'Xây dựng các màn hình và logic nghiệp vụ',assigneeId:'',assigneeName:'',reviewerId:'',reviewerName:'',startDate:past(5),dueDate:future(30),status:'in_progress',priority:'high',estimatedCost:25000000,actualCost:3000000,progress:15,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:tk3,projectId:p2,projectName:'Mobile CRM',issueType:'user_story',parentId:ep3,title:'Phân tích yêu cầu nghiệp vụ',description:'Họp stakeholder, lập tài liệu yêu cầu',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:past(25),dueDate:past(10),status:'completed',priority:'high',estimatedCost:4000000,actualCost:3800000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p2,projectName:'Mobile CRM',issueType:'task',parentId:ep3,title:'Thiết kế database',description:'Mô hình dữ liệu và ERD',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(12),dueDate:past(2),status:'completed',priority:'high',estimatedCost:5000000,actualCost:4500000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:tk4,projectId:p2,projectName:'Mobile CRM',issueType:'task',parentId:ep4,title:'Màn hình danh sách khách hàng',description:'Trang quản lý và tìm kiếm KH',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(3),dueDate:future(20),status:'todo',priority:'medium',estimatedCost:7000000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p2,projectName:'Mobile CRM',issueType:'sub_task',parentId:tk4,title:'Thiết kế mockup màn hình danh sách',description:'Wireframe và prototype màn hình',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:'',reviewerName:'',startDate:future(3),dueDate:future(8),status:'todo',priority:'medium',estimatedCost:1500000,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    {id:demoId(),projectId:p2,projectName:'Mobile CRM',issueType:'bug',parentId:'',title:'App crash khi email chứa ký tự đặc biệt',description:'Crash khi đăng nhập với email có dấu cộng (+)',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:past(2),dueDate:future(1),status:'todo',priority:'high',estimatedCost:0,actualCost:0,progress:0,createdAt:t1,updatedAt:t1,createdBy:mgrId},
+    // ── Project 3: ERP Nội bộ ────────────────────────────────────────────
+    {id:ep5,projectId:p3,projectName:'ERP Nội bộ',issueType:'epic',parentId:'',title:'Module Kế toán',description:'Hệ thống kế toán tổng hợp',assigneeId:'',assigneeName:'',reviewerId:'',reviewerName:'',startDate:'2024-06-01',dueDate:'2024-12-31',status:'completed',priority:'high',estimatedCost:60000000,actualCost:58000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:ep6,projectId:p3,projectName:'ERP Nội bộ',issueType:'epic',parentId:'',title:'Module Nhân sự & Chấm công',description:'Quản lý nhân sự toàn công ty',assigneeId:'',assigneeName:'',reviewerId:'',reviewerName:'',startDate:'2024-08-01',dueDate:'2024-12-31',status:'completed',priority:'medium',estimatedCost:35000000,actualCost:33000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:tk5,projectId:p3,projectName:'ERP Nội bộ',issueType:'task',parentId:ep5,title:'Kế toán tổng hợp',description:'Quản lý kế toán tổng hợp',assigneeId:mgrId,assigneeName:'Nguyễn Văn Manager',reviewerId:adminId,reviewerName:'Administrator',startDate:'2024-06-01',dueDate:'2024-09-30',status:'completed',priority:'high',estimatedCost:30000000,actualCost:29000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p3,projectName:'ERP Nội bộ',issueType:'sub_task',parentId:tk5,title:'Báo cáo tài chính tự động',description:'Module sinh báo cáo tài chính hàng tháng',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:'2024-10-01',dueDate:'2024-12-15',status:'completed',priority:'high',estimatedCost:20000000,actualCost:19000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p3,projectName:'ERP Nội bộ',issueType:'task',parentId:ep6,title:'Module nhân sự & chấm công',description:'Quản lý nhân sự toàn công ty',assigneeId:empId,assigneeName:'Trần Thị Employee',reviewerId:mgrId,reviewerName:'Nguyễn Văn Manager',startDate:'2024-08-01',dueDate:'2024-12-31',status:'completed',priority:'medium',estimatedCost:30000000,actualCost:31000000,progress:100,createdAt:t1,updatedAt:t1,createdBy:adminId}
   ]);
   lsSet('notifications',[
     {id:demoId(),userId:empId,title:'Công việc mới được giao',message:'Bạn được giao: "Phát triển API sản phẩm" trong Website TMĐT',type:'task',isRead:false,relatedId:'',relatedType:'task',createdAt:demoNow()},

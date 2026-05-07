@@ -93,7 +93,7 @@ function initSheet(name, sheet) {
   const headers = {
     Users:          ['id','name','email','password','role','department','isActive','createdAt'],
     Projects:       ['id','code','name','description','managerId','managerName','startDate','endDate','status','budget','createdAt','updatedAt'],
-    Tasks:          ['id','projectId','projectName','title','description','assigneeId','assigneeName','reviewerId','reviewerName','startDate','dueDate','status','priority','estimatedCost','actualCost','progress','createdAt','updatedAt','createdBy'],
+    Tasks:          ['id','projectId','projectName','title','description','assigneeId','assigneeName','reviewerId','reviewerName','startDate','dueDate','status','priority','estimatedCost','actualCost','progress','createdAt','updatedAt','createdBy','issueType','parentId'],
     Notifications:  ['id','userId','title','message','type','isRead','relatedId','relatedType','createdAt'],
     ProjectMembers: ['id','projectId','userId','userName','projectRole','addedAt','addedBy']
   };
@@ -451,14 +451,34 @@ function getTaskById(data) {
   return { success: true, data: task };
 }
 
+function validateParentChild(issueType, parentTask) {
+  if (issueType === 'epic') {
+    if (parentTask) return 'Epic không được có công việc cha';
+  } else if (issueType === 'task' || issueType === 'user_story') {
+    if (!parentTask) return 'Task/User Story phải thuộc một Epic';
+    if ((parentTask.issueType || 'task') !== 'epic') return 'Task/User Story chỉ có thể thuộc Epic';
+  } else if (issueType === 'bug') {
+    if (parentTask && (parentTask.issueType || 'task') !== 'epic') return 'Bug chỉ có thể thuộc Epic (nếu có)';
+  } else if (issueType === 'sub_task') {
+    if (!parentTask) return 'Sub-task phải có công việc cha';
+    if (['task','user_story','bug'].indexOf(parentTask.issueType || 'task') === -1) return 'Sub-task chỉ có thể thuộc Task, User Story hoặc Bug';
+  }
+  return null;
+}
+
 function createTask(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
   const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
   if (!canContributeToProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền tạo công việc trong dự án này (cần vai trò Thành viên trở lên)' };
+  const issueType = data.issueType || 'task';
+  const allTasks = sheetToObjects(getSheet(SHEETS.TASKS));
+  const parentTask = data.parentId ? allTasks.find(function(t) { return t.id === data.parentId; }) : null;
+  const validErr = validateParentChild(issueType, parentTask);
+  if (validErr) return { success: false, message: validErr };
   const sheet = getSheet(SHEETS.TASKS);
   const id = generateId(); const ts = nowIso();
-  sheet.appendRow([id, data.projectId, data.projectName, data.title, data.description||'', data.assigneeId||'', data.assigneeName||'', data.reviewerId||'', data.reviewerName||'', data.startDate||'', data.dueDate||'', data.status||'todo', data.priority||'medium', Number(data.estimatedCost)||0, Number(data.actualCost)||0, Number(data.progress)||0, ts, ts, user.userId]);
+  sheet.appendRow([id, data.projectId, data.projectName, data.title, data.description||'', data.assigneeId||'', data.assigneeName||'', data.reviewerId||'', data.reviewerName||'', data.startDate||'', data.dueDate||'', data.status||'todo', data.priority||'medium', Number(data.estimatedCost)||0, Number(data.actualCost)||0, Number(data.progress)||0, ts, ts, user.userId, issueType, data.parentId||'']);
   if (data.assigneeId && data.assigneeId !== user.userId) addNotification(data.assigneeId, 'Công việc mới được giao', 'Bạn được giao: "' + data.title + '" trong dự án ' + data.projectName, 'task', id, 'task');
   if (data.reviewerId && data.reviewerId !== user.userId && data.reviewerId !== data.assigneeId) addNotification(data.reviewerId, 'Được phân công kiểm duyệt', 'Bạn kiểm duyệt: "' + data.title + '"', 'task', id, 'task');
   return { success: true, id: id, message: 'Tạo công việc thành công' };
@@ -480,7 +500,11 @@ function updateTask(data) {
       return { success: false, message: 'Thành viên chỉ được chỉnh sửa công việc được phân công cho mình' };
     }
   }
-  updateRow(sheet, rowIndex, { projectId: data.projectId, projectName: data.projectName, title: data.title, description: data.description, assigneeId: data.assigneeId, assigneeName: data.assigneeName, reviewerId: data.reviewerId, reviewerName: data.reviewerName, startDate: data.startDate, dueDate: data.dueDate, status: data.status, priority: data.priority, estimatedCost: Number(data.estimatedCost)||0, actualCost: Number(data.actualCost)||0, progress: Number(data.progress)||0, updatedAt: nowIso() });
+  const newIssueType = data.issueType || oldTask.issueType || 'task';
+  const newParentTask = data.parentId ? sheetToObjects(sheet).find(function(t) { return t.id === data.parentId; }) : null;
+  const validErr2 = validateParentChild(newIssueType, newParentTask);
+  if (validErr2) return { success: false, message: validErr2 };
+  updateRow(sheet, rowIndex, { projectId: data.projectId, projectName: data.projectName, title: data.title, description: data.description, assigneeId: data.assigneeId, assigneeName: data.assigneeName, reviewerId: data.reviewerId, reviewerName: data.reviewerName, startDate: data.startDate, dueDate: data.dueDate, status: data.status, priority: data.priority, estimatedCost: Number(data.estimatedCost)||0, actualCost: Number(data.actualCost)||0, progress: Number(data.progress)||0, updatedAt: nowIso(), issueType: newIssueType, parentId: data.parentId||'' });
   if (data.status === 'review' && oldTask && oldTask.status !== 'review' && oldTask.reviewerId) addNotification(oldTask.reviewerId, 'Công việc cần kiểm duyệt', '"' + (data.title||oldTask.title) + '" đã hoàn thành và cần kiểm duyệt', 'task', data.id, 'task');
   return { success: true, message: 'Cập nhật công việc thành công' };
 }
@@ -489,15 +513,30 @@ function deleteTask(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
   const sheet = getSheet(SHEETS.TASKS);
-  const rowIndex = findRowById(sheet, data.id);
-  if (rowIndex === -1) return { success: false, message: 'Công việc không tồn tại' };
+  const allTasks = sheetToObjects(sheet);
+  const task = allTasks.find(function(t) { return t.id === data.id; });
+  if (!task) return { success: false, message: 'Công việc không tồn tại' };
   if (user.role !== 'admin') {
-    const task = sheetToObjects(sheet).find(function(t) { return t.id === data.id; });
     const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
     if (!canManageProject(user, task.projectId, members)) return { success: false, message: 'Chỉ Quản lý dự án hoặc Admin mới có thể xóa công việc' };
   }
-  sheet.deleteRow(rowIndex);
-  return { success: true, message: 'Xóa công việc thành công' };
+  // Cascade: task + direct children + their sub-tasks
+  var toDeleteIds = [data.id];
+  allTasks.filter(function(t) { return t.parentId === data.id; }).forEach(function(c) {
+    toDeleteIds.push(c.id);
+    allTasks.filter(function(t) { return t.parentId === c.id; }).forEach(function(gc) { toDeleteIds.push(gc.id); });
+  });
+  var toDeleteSet = {};
+  toDeleteIds.forEach(function(id) { toDeleteSet[id] = true; });
+  var allData = sheet.getDataRange().getValues();
+  var rowsToDelete = [];
+  for (var i = 1; i < allData.length; i++) {
+    if (toDeleteSet[String(allData[i][0])]) rowsToDelete.push(i + 1);
+  }
+  rowsToDelete.sort(function(a, b) { return b - a; });
+  rowsToDelete.forEach(function(r) { sheet.deleteRow(r); });
+  var msg = toDeleteIds.length > 1 ? 'Đã xóa công việc và ' + (toDeleteIds.length - 1) + ' công việc con' : 'Xóa công việc thành công';
+  return { success: true, message: msg };
 }
 
 // ==================== NOTIFICATIONS ====================
