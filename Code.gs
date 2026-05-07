@@ -6,7 +6,8 @@ const SHEETS = {
   PROJECTS: 'Projects',
   TASKS: 'Tasks',
   NOTIFICATIONS: 'Notifications',
-  PROJECT_MEMBERS: 'ProjectMembers'
+  PROJECT_MEMBERS: 'ProjectMembers',
+  SPRINTS: 'Sprints'
 };
 
 // ==================== ENTRY POINT ====================
@@ -40,6 +41,15 @@ function processRequest(action, data) {
       case 'createTask':            return createTask(data);
       case 'updateTask':            return updateTask(data);
       case 'deleteTask':            return deleteTask(data);
+      case 'getSprints':            return getSprints(data);
+      case 'createSprint':          return createSprint(data);
+      case 'updateSprint':          return updateSprint(data);
+      case 'startSprint':           return startSprint(data);
+      case 'completeSprint':        return completeSprint(data);
+      case 'deleteSprint':          return deleteSprint(data);
+      case 'moveIssuesToSprint':    return moveIssuesToSprint(data);
+      case 'updateStoryPoints':     return updateStoryPoints(data);
+      case 'updateBacklogOrder':    return updateBacklogOrder(data);
       case 'getNotifications':      return getNotifications(data);
       case 'markNotificationRead':  return markNotificationRead(data);
       case 'markAllRead':           return markAllNotificationsRead(data);
@@ -92,8 +102,9 @@ function getSheet(name) {
 function initSheet(name, sheet) {
   const headers = {
     Users:          ['id','name','email','password','role','department','isActive','createdAt'],
-    Projects:       ['id','code','name','description','managerId','managerName','startDate','endDate','status','budget','createdAt','updatedAt'],
-    Tasks:          ['id','projectId','projectName','title','description','assigneeId','assigneeName','reviewerId','reviewerName','startDate','dueDate','status','priority','estimatedCost','actualCost','progress','createdAt','updatedAt','createdBy','issueType','parentId'],
+    Projects:       ['id','code','name','description','managerId','managerName','startDate','endDate','status','budget','createdAt','updatedAt','projectType'],
+    Tasks:          ['id','projectId','projectName','title','description','assigneeId','assigneeName','reviewerId','reviewerName','startDate','dueDate','status','priority','estimatedCost','actualCost','progress','createdAt','updatedAt','createdBy','issueType','parentId','sprintId','storyPoints','backlogOrder'],
+    Sprints:        ['id','projectId','name','goal','startDate','endDate','status','capacity','totalSpSnapshot','createdAt','createdBy'],
     Notifications:  ['id','userId','title','message','type','isRead','relatedId','relatedType','createdAt'],
     ProjectMembers: ['id','projectId','userId','userName','projectRole','addedAt','addedBy']
   };
@@ -193,7 +204,7 @@ function setSpreadsheetId(id) {
 
 // ==================== INIT ====================
 function initializeApp() {
-  ['Users','Projects','Tasks','Notifications','ProjectMembers'].forEach(function(n) { getSheet(n); });
+  ['Users','Projects','Tasks','Notifications','ProjectMembers','Sprints'].forEach(function(n) { getSheet(n); });
   const usersSheet = getSheet(SHEETS.USERS);
   if (sheetToObjects(usersSheet).length === 0) {
     const ts = nowIso();
@@ -313,7 +324,7 @@ function createProject(data) {
   const id = generateId(); const ts = nowIso();
   const managerId = data.managerId || user.userId;
   const managerName = data.managerName || user.name;
-  sheet.appendRow([id, data.code||'', data.name, data.description||'', managerId, managerName, data.startDate||'', data.endDate||'', data.status||'active', Number(data.budget)||0, ts, ts]);
+  sheet.appendRow([id, data.code||'', data.name, data.description||'', managerId, managerName, data.startDate||'', data.endDate||'', data.status||'active', Number(data.budget)||0, ts, ts, data.projectType||'waterfall']);
 
   // Auto-add creator as owner
   addMemberEntry(id, user.userId, user.name, 'owner', user.userId);
@@ -335,7 +346,7 @@ function updateProject(data) {
   const sheet = getSheet(SHEETS.PROJECTS);
   const rowIndex = findRowById(sheet, data.id);
   if (rowIndex === -1) return { success: false, message: 'Dự án không tồn tại' };
-  updateRow(sheet, rowIndex, { code: data.code, name: data.name, description: data.description, managerId: data.managerId, managerName: data.managerName, startDate: data.startDate, endDate: data.endDate, status: data.status, budget: Number(data.budget)||0, updatedAt: nowIso() });
+  updateRow(sheet, rowIndex, { code: data.code, name: data.name, description: data.description, managerId: data.managerId, managerName: data.managerName, startDate: data.startDate, endDate: data.endDate, status: data.status, budget: Number(data.budget)||0, updatedAt: nowIso(), projectType: data.projectType||'waterfall' });
   return { success: true, message: 'Cập nhật dự án thành công' };
 }
 
@@ -478,7 +489,7 @@ function createTask(data) {
   if (validErr) return { success: false, message: validErr };
   const sheet = getSheet(SHEETS.TASKS);
   const id = generateId(); const ts = nowIso();
-  sheet.appendRow([id, data.projectId, data.projectName, data.title, data.description||'', data.assigneeId||'', data.assigneeName||'', data.reviewerId||'', data.reviewerName||'', data.startDate||'', data.dueDate||'', data.status||'todo', data.priority||'medium', Number(data.estimatedCost)||0, Number(data.actualCost)||0, Number(data.progress)||0, ts, ts, user.userId, issueType, data.parentId||'']);
+  sheet.appendRow([id, data.projectId, data.projectName, data.title, data.description||'', data.assigneeId||'', data.assigneeName||'', data.reviewerId||'', data.reviewerName||'', data.startDate||'', data.dueDate||'', data.status||'todo', data.priority||'medium', Number(data.estimatedCost)||0, Number(data.actualCost)||0, Number(data.progress)||0, ts, ts, user.userId, issueType, data.parentId||'', data.sprintId||'', data.storyPoints!==undefined&&data.storyPoints!==''?Number(data.storyPoints):'', Number(data.backlogOrder)||0]);
   if (data.assigneeId && data.assigneeId !== user.userId) addNotification(data.assigneeId, 'Công việc mới được giao', 'Bạn được giao: "' + data.title + '" trong dự án ' + data.projectName, 'task', id, 'task');
   if (data.reviewerId && data.reviewerId !== user.userId && data.reviewerId !== data.assigneeId) addNotification(data.reviewerId, 'Được phân công kiểm duyệt', 'Bạn kiểm duyệt: "' + data.title + '"', 'task', id, 'task');
   return { success: true, id: id, message: 'Tạo công việc thành công' };
@@ -504,7 +515,8 @@ function updateTask(data) {
   const newParentTask = data.parentId ? sheetToObjects(sheet).find(function(t) { return t.id === data.parentId; }) : null;
   const validErr2 = validateParentChild(newIssueType, newParentTask);
   if (validErr2) return { success: false, message: validErr2 };
-  updateRow(sheet, rowIndex, { projectId: data.projectId, projectName: data.projectName, title: data.title, description: data.description, assigneeId: data.assigneeId, assigneeName: data.assigneeName, reviewerId: data.reviewerId, reviewerName: data.reviewerName, startDate: data.startDate, dueDate: data.dueDate, status: data.status, priority: data.priority, estimatedCost: Number(data.estimatedCost)||0, actualCost: Number(data.actualCost)||0, progress: Number(data.progress)||0, updatedAt: nowIso(), issueType: newIssueType, parentId: data.parentId||'' });
+  var spVal = data.storyPoints !== undefined ? (data.storyPoints === '' ? '' : Number(data.storyPoints)) : (oldTask.storyPoints !== undefined ? oldTask.storyPoints : '');
+  updateRow(sheet, rowIndex, { projectId: data.projectId, projectName: data.projectName, title: data.title, description: data.description, assigneeId: data.assigneeId, assigneeName: data.assigneeName, reviewerId: data.reviewerId, reviewerName: data.reviewerName, startDate: data.startDate, dueDate: data.dueDate, status: data.status, priority: data.priority, estimatedCost: Number(data.estimatedCost)||0, actualCost: Number(data.actualCost)||0, progress: Number(data.progress)||0, updatedAt: nowIso(), issueType: newIssueType, parentId: data.parentId||'', sprintId: data.sprintId !== undefined ? data.sprintId : (oldTask.sprintId||''), storyPoints: spVal, backlogOrder: data.backlogOrder !== undefined ? Number(data.backlogOrder)||0 : Number(oldTask.backlogOrder)||0 });
   if (data.status === 'review' && oldTask && oldTask.status !== 'review' && oldTask.reviewerId) addNotification(oldTask.reviewerId, 'Công việc cần kiểm duyệt', '"' + (data.title||oldTask.title) + '" đã hoàn thành và cần kiểm duyệt', 'task', data.id, 'task');
   return { success: true, message: 'Cập nhật công việc thành công' };
 }
@@ -537,6 +549,135 @@ function deleteTask(data) {
   rowsToDelete.forEach(function(r) { sheet.deleteRow(r); });
   var msg = toDeleteIds.length > 1 ? 'Đã xóa công việc và ' + (toDeleteIds.length - 1) + ' công việc con' : 'Xóa công việc thành công';
   return { success: true, message: msg };
+}
+
+// ==================== SPRINTS ====================
+function getSprints(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const sprints = sheetToObjects(getSheet(SHEETS.SPRINTS)).filter(function(s) { return s.projectId === data.projectId; });
+  const tasks = sheetToObjects(getSheet(SHEETS.TASKS));
+  const result = sprints.map(function(s) {
+    const st = tasks.filter(function(t) { return t.sprintId === s.id; });
+    const totalSp = st.reduce(function(a, t) { return a + (Number(t.storyPoints) || 0); }, 0);
+    const completedSp = st.filter(function(t) { return t.status === 'completed'; }).reduce(function(a, t) { return a + (Number(t.storyPoints) || 0); }, 0);
+    return Object.assign({}, s, { totalSp: totalSp, completedSp: completedSp, issueCount: st.length });
+  });
+  return { success: true, data: result.sort(function(a,b){ const ord={planning:0,active:1,completed:2}; return (ord[a.status]||0)-(ord[b.status]||0); }) };
+}
+
+function createSprint(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền tạo Sprint' };
+  const id = generateId(); const ts = nowIso();
+  getSheet(SHEETS.SPRINTS).appendRow([id, data.projectId, data.name, data.goal||'', data.startDate||'', data.endDate||'', 'planning', Number(data.capacity)||0, 0, ts, user.userId]);
+  return { success: true, id: id, message: 'Tạo Sprint thành công' };
+}
+
+function updateSprint(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền cập nhật Sprint' };
+  const sheet = getSheet(SHEETS.SPRINTS);
+  const rowIndex = findRowById(sheet, data.id);
+  if (rowIndex === -1) return { success: false, message: 'Sprint không tồn tại' };
+  updateRow(sheet, rowIndex, { name: data.name, goal: data.goal||'', startDate: data.startDate||'', endDate: data.endDate||'', capacity: Number(data.capacity)||0 });
+  return { success: true, message: 'Cập nhật Sprint thành công' };
+}
+
+function startSprint(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền bắt đầu Sprint' };
+  const sprintsSheet = getSheet(SHEETS.SPRINTS);
+  const allSprints = sheetToObjects(sprintsSheet);
+  if (allSprints.some(function(s) { return s.projectId === data.projectId && s.status === 'active'; })) return { success: false, message: 'Đã có Sprint đang chạy trong dự án này. Kết thúc Sprint hiện tại trước.' };
+  const rowIndex = findRowById(sprintsSheet, data.id);
+  if (rowIndex === -1) return { success: false, message: 'Sprint không tồn tại' };
+  const tasks = sheetToObjects(getSheet(SHEETS.TASKS));
+  const totalSp = tasks.filter(function(t) { return t.sprintId === data.id; }).reduce(function(a, t) { return a + (Number(t.storyPoints) || 0); }, 0);
+  updateRow(sprintsSheet, rowIndex, { status: 'active', totalSpSnapshot: totalSp, startDate: data.startDate || nowIso().split('T')[0] });
+  return { success: true, message: 'Sprint đã bắt đầu!' };
+}
+
+function completeSprint(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền kết thúc Sprint' };
+  const sprintsSheet = getSheet(SHEETS.SPRINTS);
+  const rowIndex = findRowById(sprintsSheet, data.id);
+  if (rowIndex === -1) return { success: false, message: 'Sprint không tồn tại' };
+  const taskSheet = getSheet(SHEETS.TASKS);
+  const tasks = sheetToObjects(taskSheet);
+  var moved = 0;
+  tasks.forEach(function(t) {
+    if (t.sprintId === data.id && t.status !== 'completed') {
+      const tr = findRowById(taskSheet, t.id);
+      if (tr !== -1) { updateRow(taskSheet, tr, { sprintId: '', backlogOrder: 0 }); moved++; }
+    }
+  });
+  updateRow(sprintsSheet, rowIndex, { status: 'completed' });
+  return { success: true, message: 'Sprint kết thúc. ' + moved + ' issue chưa done đã chuyển về Backlog.' };
+}
+
+function deleteSprint(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền xóa Sprint' };
+  const sprintsSheet = getSheet(SHEETS.SPRINTS);
+  const sprint = sheetToObjects(sprintsSheet).find(function(s) { return s.id === data.id; });
+  if (!sprint) return { success: false, message: 'Sprint không tồn tại' };
+  if (sprint.status === 'active') return { success: false, message: 'Không thể xóa Sprint đang chạy' };
+  const taskSheet = getSheet(SHEETS.TASKS);
+  sheetToObjects(taskSheet).forEach(function(t) {
+    if (t.sprintId === data.id) { const tr = findRowById(taskSheet, t.id); if (tr !== -1) updateRow(taskSheet, tr, { sprintId: '' }); }
+  });
+  const rowIndex = findRowById(sprintsSheet, data.id);
+  if (rowIndex !== -1) sprintsSheet.deleteRow(rowIndex);
+  return { success: true, message: 'Đã xóa Sprint' };
+}
+
+function moveIssuesToSprint(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canContributeToProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền' };
+  const taskSheet = getSheet(SHEETS.TASKS);
+  var count = 0;
+  (data.issueIds || []).forEach(function(issueId) {
+    const rowIndex = findRowById(taskSheet, issueId);
+    if (rowIndex !== -1) { updateRow(taskSheet, rowIndex, { sprintId: data.sprintId || '' }); count++; }
+  });
+  return { success: true, message: count + ' issue đã chuyển' };
+}
+
+function updateStoryPoints(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canContributeToProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền' };
+  const taskSheet = getSheet(SHEETS.TASKS);
+  const rowIndex = findRowById(taskSheet, data.id);
+  if (rowIndex === -1) return { success: false, message: 'Issue không tồn tại' };
+  updateRow(taskSheet, rowIndex, { storyPoints: data.storyPoints !== '' ? Number(data.storyPoints) : '' });
+  return { success: true, message: 'Cập nhật Story Points thành công' };
+}
+
+function updateBacklogOrder(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const taskSheet = getSheet(SHEETS.TASKS);
+  (data.orders || []).forEach(function(item) {
+    const rowIndex = findRowById(taskSheet, item.id);
+    if (rowIndex !== -1) updateRow(taskSheet, rowIndex, { backlogOrder: Number(item.backlogOrder) || 0 });
+  });
+  return { success: true };
 }
 
 // ==================== NOTIFICATIONS ====================

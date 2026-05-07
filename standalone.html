@@ -910,6 +910,7 @@ function projectCard(p) {
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
         ${projectStatusBadge(p.status)}
+        ${p.projectType==='agile'?`<span style="font-size:10px;font-weight:700;padding:1px 7px;border-radius:10px;background:#ecfdf5;color:#059669">Agile</span>`:''}
         ${memberRoleBadge(p.userProjectRole)}
       </div>
     </div>
@@ -960,6 +961,19 @@ function openProjectModal(id) {
         <input type="text" class="form-control no-icon" id="f-proj-code" value="${esc(proj?.code||'')}" placeholder="VD: DA001" ${isEdit?'readonly':''}>
       </div>
       <div class="form-group">
+        <label>Loại dự án</label>
+        <select class="form-control" id="f-proj-type">
+          <option value="waterfall" ${(!proj?.projectType||proj?.projectType==='waterfall')?'selected':''}>Waterfall (Truyền thống)</option>
+          <option value="agile" ${proj?.projectType==='agile'?'selected':''}>Agile / Scrum</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <label>Tên dự án <span style="color:var(--danger)">*</span></label>
+        <input type="text" class="form-control no-icon" id="f-proj-name" value="${esc(proj?.name||'')}" placeholder="Nhập tên dự án">
+      </div>
+      <div class="form-group">
         <label>Trạng thái</label>
         <select class="form-control" id="f-proj-status">
           <option value="active" ${proj?.status==='active'?'selected':''}>Đang thực hiện</option>
@@ -967,10 +981,6 @@ function openProjectModal(id) {
           <option value="completed" ${proj?.status==='completed'?'selected':''}>Hoàn thành</option>
         </select>
       </div>
-    </div>
-    <div class="form-group">
-      <label>Tên dự án <span style="color:var(--danger)">*</span></label>
-      <input type="text" class="form-control no-icon" id="f-proj-name" value="${esc(proj?.name||'')}" placeholder="Nhập tên dự án">
     </div>
     <div class="form-group">
       <label>Mô tả</label>
@@ -1016,7 +1026,8 @@ async function saveProject(id) {
     startDate: document.getElementById('f-proj-start').value,
     endDate: document.getElementById('f-proj-end').value,
     status: document.getElementById('f-proj-status').value,
-    budget: document.getElementById('f-proj-budget').value
+    budget: document.getElementById('f-proj-budget').value,
+    projectType: (document.getElementById('f-proj-type')||{value:'waterfall'}).value || 'waterfall'
   };
   if (!data.name) { showToast('warning','Lỗi','Vui lòng nhập tên dự án'); return; }
   if (!isEdit && !data.code) { showToast('warning','Lỗi','Vui lòng nhập mã dự án'); return; }
@@ -1040,24 +1051,38 @@ async function saveProject(id) {
 
 async function openProjectDetail(id) {
   const proj = STATE.projects.find(function(p){return p.id===id;}) || {};
-  const [tasksRes, membersRes] = await Promise.all([
-    api('getTasks', { projectId: id }),
-    api('getProjectMembers', { projectId: id })
-  ]);
-  const tasks = tasksRes.success ? tasksRes.data : [];
-  const members = membersRes.success ? membersRes.data : [];
+  const isAgile = proj.projectType === 'agile';
+  const fetches = [api('getTasks', { projectId: id }), api('getProjectMembers', { projectId: id })];
+  if (isAgile) fetches.push(api('getSprints', { projectId: id }));
+  const results = await Promise.all(fetches);
+  const tasks = results[0].success ? results[0].data : [];
+  const members = results[1].success ? results[1].data : [];
+  const sprints = isAgile && results[2] && results[2].success ? results[2].data : [];
   const pct = tasks.length ? Math.round(tasks.filter(function(t){return t.status==='completed';}).length/tasks.length*100) : 0;
   const userProjRole = proj.userProjectRole || (STATE.user.role === 'admin' ? 'admin' : '');
   const canEdit = STATE.user.role === 'admin' || userProjRole === 'owner';
   const canDelete = STATE.user.role === 'admin';
 
+  // Store sprints on window for tab switching
+  window._detailSprints = sprints;
+  window._detailProjectType = isAgile ? 'agile' : 'waterfall';
+
+  const projTypeBadge = isAgile
+    ? `<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700;background:#ecfdf5;color:#059669;border:1px solid #6ee7b7">Agile/Scrum</span>`
+    : `<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:11px;font-weight:700;background:#eff6ff;color:#1d4ed8;border:1px solid #93c5fd">Waterfall</span>`;
+
+  const activeSprint = sprints.find(function(s){return s.status==='active';});
+  const activeBanner = activeSprint ? `<div style="padding:8px 12px;background:#ecfdf5;border-radius:6px;border-left:3px solid #10b981;font-size:12px;margin-bottom:12px"><i class="fas fa-running" style="color:#10b981"></i> <strong>Sprint đang chạy:</strong> ${esc(activeSprint.name)} — ${activeSprint.completedSp}/${activeSprint.totalSp} SP hoàn thành</div>` : '';
+
   openModal(proj.name || 'Chi tiết dự án', `
-    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px;flex-wrap:wrap">
       ${projectStatusBadge(proj.status)}
+      ${projTypeBadge}
       <span style="font-size:13px;color:var(--text-muted)"># ${esc(proj.code||'')}</span>
       ${memberRoleBadge(userProjRole)}
     </div>
-    ${proj.description ? `<p style="color:var(--text-muted);margin-bottom:16px;font-size:13px">${esc(proj.description)}</p>` : ''}
+    ${proj.description ? `<p style="color:var(--text-muted);margin-bottom:12px;font-size:13px">${esc(proj.description)}</p>` : ''}
+    ${activeBanner}
     <div class="task-meta">
       <div class="task-meta-item"><i class="fas fa-user"></i><span>Quản lý: <strong>${esc(proj.managerName||'Chưa phân công')}</strong></span></div>
       <div class="task-meta-item"><i class="fas fa-calendar-alt"></i><span>${fmtDate(proj.startDate)||'?'} → ${fmtDate(proj.endDate)||'?'}</span></div>
@@ -1069,12 +1094,15 @@ async function openProjectDetail(id) {
       <div class="progress-bar" style="height:10px"><div class="progress-fill ${pct===100?'success':''}" style="width:${pct}%"></div></div>
     </div>
     <div class="tabs">
-      <button class="tab-btn active" onclick="switchDetailTab('tasks','${id}',this)">Công việc (${tasks.length})</button>
+      ${isAgile
+        ? `<button class="tab-btn active" onclick="switchDetailTab('backlog','${id}',this)">Backlog (${tasks.filter(function(t){return !t.sprintId;}).length})</button>
+           <button class="tab-btn" onclick="switchDetailTab('sprints','${id}',this)">Sprints (${sprints.length})</button>`
+        : `<button class="tab-btn active" onclick="switchDetailTab('tasks','${id}',this)">Công việc (${tasks.length})</button>`}
       <button class="tab-btn" onclick="switchDetailTab('cost','${id}',this)">Chi phí</button>
       <button class="tab-btn" onclick="switchDetailTab('members','${id}',this)">Thành viên (${members.length})</button>
     </div>
     <div id="detail-tab-content">
-      ${renderProjectTasksTab(tasks, id, userProjRole)}
+      ${isAgile ? renderBacklogTab(tasks, sprints, id, userProjRole) : renderProjectTasksTab(tasks, id, userProjRole)}
     </div>
   `, [
     { text: 'Đóng', cls: 'btn-outline', action: 'closeModal()' },
@@ -1127,6 +1155,12 @@ async function switchDetailTab(tab, projectId, btn) {
     const membersRes = await api('getProjectMembers', { projectId });
     const members = membersRes.success ? membersRes.data : [];
     content.innerHTML = renderProjectMembersTab(members, projectId, userProjRole);
+  } else if (tab === 'backlog' || tab === 'sprints') {
+    const [tasksRes, sprintsRes] = await Promise.all([api('getTasks', {projectId}), api('getSprints', {projectId})]);
+    const tasks = tasksRes.success ? tasksRes.data : [];
+    const sprints = sprintsRes.success ? sprintsRes.data : [];
+    window._detailSprints = sprints;
+    content.innerHTML = tab === 'backlog' ? renderBacklogTab(tasks, sprints, projectId, userProjRole) : renderSprintsTab(sprints, tasks, projectId, userProjRole);
   } else {
     const tasksRes = await api('getTasks', { projectId });
     const tasks = tasksRes.success ? tasksRes.data : [];
@@ -1446,6 +1480,394 @@ function filterTasks() {
       </div></td>
     </tr>`;}).join('')}
     </tbody></table></div></div>`;
+}
+
+// ============================================================
+// AGILE – BACKLOG
+// ============================================================
+function spBadge(sp) {
+  if (sp === '' || sp === null || sp === undefined) return `<span style="display:inline-block;width:28px;height:20px;line-height:20px;text-align:center;border-radius:4px;font-size:11px;font-weight:700;background:var(--bg);color:var(--text-muted);border:1px dashed var(--border)">?</span>`;
+  return `<span style="display:inline-block;min-width:28px;height:20px;line-height:20px;text-align:center;border-radius:4px;font-size:11px;font-weight:700;background:#dbeafe;color:#1d4ed8;padding:0 4px">${sp}</span>`;
+}
+
+function sprintStatusBadge(s) {
+  const map = { planning:{l:'Planning',bg:'#f3f4f6',c:'#4b5563'}, active:{l:'Active',bg:'#ecfdf5',c:'#059669'}, completed:{l:'Completed',bg:'#ede9fe',c:'#7c3aed'} };
+  const m = map[s] || map['planning'];
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:10px;font-weight:700;background:${m.bg};color:${m.c}">${m.l}</span>`;
+}
+
+function renderBacklogTab(tasks, sprints, projectId, userProjRole) {
+  const canManage = STATE.user.role === 'admin' || userProjRole === 'owner' || userProjRole === 'member';
+  const backlogTasks = tasks.filter(function(t){return !t.sprintId;}).sort(function(a,b){return (Number(a.backlogOrder)||9999)-(Number(b.backlogOrder)||9999)||(new Date(a.createdAt)-new Date(b.createdAt));});
+  const planSprints = sprints.filter(function(s){return s.status==='planning'||s.status==='active';});
+  const sprintOpts = planSprints.length ? planSprints.map(function(s){return `<option value="${s.id}">[${s.status==='active'?'Active':'Planning'}] ${esc(s.name)}</option>`;}).join('') : '<option disabled>Chưa có Sprint</option>';
+
+  // Group by epic
+  const taskMap = {};
+  tasks.forEach(function(t){taskMap[t.id]=t;});
+  const epics = tasks.filter(function(t){return (t.issueType||'task')==='epic';});
+  const groups = {};
+  epics.forEach(function(e){groups[e.id]={epic:e,items:[]};});
+  groups['__none__'] = {epic:null,items:[]};
+  backlogTasks.forEach(function(t){
+    if ((t.issueType||'task')==='epic') return;
+    const grp = (t.parentId && groups[t.parentId]) ? t.parentId : '__none__';
+    groups[grp].items.push(t);
+  });
+
+  const renderItem = function(t) {
+    const sp = t.storyPoints !== '' && t.storyPoints !== null && t.storyPoints !== undefined ? t.storyPoints : '';
+    return `<tr draggable="true" data-drag-id="${t.id}" ondragstart="backlogDragStart(event,'${t.id}')" ondragover="backlogDragOver(event)" ondrop="backlogDrop(event,'${t.id}','${projectId}')">
+      <td style="width:20px;cursor:grab;color:var(--text-muted);padding-left:8px"><i class="fas fa-grip-vertical"></i></td>
+      <td>${issueTypeBadge(t.issueType||'task')}</td>
+      <td style="max-width:220px"><div style="font-size:13px;font-weight:500">${esc(t.title)}</div>${t.assigneeName?`<div style="font-size:11px;color:var(--text-muted)">${esc(t.assigneeName)}</div>`:''}</td>
+      <td>${priorityBadge(t.priority)}</td>
+      <td style="text-align:center">
+        <span onclick="inlineEditSP(event,'${t.id}','${projectId}','${sp}')" style="cursor:pointer" title="Click để chỉnh SP">${spBadge(sp)}</span>
+      </td>
+      <td>
+        ${canManage && planSprints.length ? `<select class="form-control" style="font-size:11px;padding:2px 4px;height:28px;width:auto" onchange="moveIssueToSprint('${projectId}','${t.id}',this.value,this)"><option value="">→ Sprint</option>${sprintOpts}</select>` : '—'}
+      </td>
+      <td><div class="td-actions">
+        <button class="btn btn-sm btn-outline" onclick="openTaskModal('${t.id}')"><i class="fas fa-edit"></i></button>
+      </div></td>
+    </tr>`;
+  };
+
+  let html = `<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+    <span style="font-size:13px;color:var(--text-muted)">${backlogTasks.length} issue trong Backlog</span>
+    ${canManage?`<button class="btn btn-sm btn-primary" onclick="closeModal();openTaskModal(null,'${projectId}')"><i class="fas fa-plus"></i> Thêm Issue</button>`:''}
+  </div>`;
+
+  if (!backlogTasks.length) {
+    return html + '<div class="empty-state" style="padding:32px"><i class="fas fa-inbox"></i><h3>Backlog trống</h3><p>Tất cả issue đã được gán vào Sprint hoặc chưa có issue nào</p></div>';
+  }
+
+  html += '<div id="backlog-list">';
+  const orderedGroups = epics.filter(function(e){return groups[e.id]&&groups[e.id].items.length;}).concat(groups['__none__'].items.length?[null]:[]);
+
+  epics.filter(function(e){return groups[e.id]&&groups[e.id].items.length;}).forEach(function(epic){
+    const grp = groups[epic.id];
+    const grpSp = grp.items.reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+    html += `<div style="margin-bottom:16px"><div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg);border-radius:6px;margin-bottom:4px;border-left:3px solid #7c3aed">
+      <span style="font-weight:700;font-size:13px;color:#7c3aed">${esc(epic.title)}</span>
+      <span style="font-size:11px;color:var(--text-muted)">${grp.items.length} issue · ${grpSp} SP</span>
+    </div>
+    <div class="table-wrap"><table style="margin-bottom:0"><thead><tr><th style="width:20px"></th><th style="width:70px">Loại</th><th>Tên issue</th><th>Ưu tiên</th><th style="text-align:center">SP</th><th>Sprint</th><th style="width:50px"></th></tr></thead>
+    <tbody>${grp.items.map(renderItem).join('')}</tbody></table></div></div>`;
+  });
+
+  if (groups['__none__'].items.length) {
+    const grpSp = groups['__none__'].items.reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+    html += `<div style="margin-bottom:16px"><div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg);border-radius:6px;margin-bottom:4px;border-left:3px solid var(--border)">
+      <span style="font-weight:700;font-size:13px;color:var(--text-muted)">Không có Epic</span>
+      <span style="font-size:11px;color:var(--text-muted)">${groups['__none__'].items.length} issue · ${grpSp} SP</span>
+    </div>
+    <div class="table-wrap"><table style="margin-bottom:0"><thead><tr><th style="width:20px"></th><th style="width:70px">Loại</th><th>Tên issue</th><th>Ưu tiên</th><th style="text-align:center">SP</th><th>Sprint</th><th style="width:50px"></th></tr></thead>
+    <tbody>${groups['__none__'].items.map(renderItem).join('')}</tbody></table></div></div>`;
+  }
+
+  html += '</div>';
+  return html;
+}
+
+var _backlogDragId = null;
+function backlogDragStart(e, id) { _backlogDragId = id; e.dataTransfer.effectAllowed = 'move'; }
+function backlogDragOver(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
+async function backlogDrop(e, targetId, projectId) {
+  e.preventDefault();
+  if (!_backlogDragId || _backlogDragId === targetId) return;
+  // Reorder rows visually
+  const rows = Array.from(document.querySelectorAll('[data-drag-id]'));
+  const ids = rows.map(function(r){return r.dataset.dragId;});
+  const from = ids.indexOf(_backlogDragId), to = ids.indexOf(targetId);
+  if (from === -1 || to === -1) return;
+  ids.splice(from, 1); ids.splice(to, 0, _backlogDragId);
+  const orders = ids.map(function(id, i){return {id:id, backlogOrder:i+1};});
+  // Move DOM rows
+  const tbody = rows[0].parentNode;
+  const dragged = rows[from];
+  const target = rows[to];
+  if (from < to) tbody.insertBefore(dragged, target.nextSibling); else tbody.insertBefore(dragged, target);
+  _backlogDragId = null;
+  await api('updateBacklogOrder', { projectId, orders });
+}
+
+async function moveIssueToSprint(projectId, taskId, sprintId, selectEl) {
+  if (!sprintId) return;
+  const res = await api('moveIssuesToSprint', { projectId, issueIds: [taskId], sprintId });
+  if (res.success) {
+    showToast('success','','Đã chuyển issue vào Sprint');
+    // Remove row from backlog UI
+    const row = selectEl ? selectEl.closest('tr') : null;
+    if (row) row.remove();
+  } else { showToast('error','Lỗi', res.message); if(selectEl) selectEl.value = ''; }
+}
+
+async function moveIssueToBacklog(projectId, taskId) {
+  const res = await api('moveIssuesToSprint', { projectId, issueIds: [taskId], sprintId: '' });
+  if (res.success) { showToast('success','','Đã chuyển về Backlog'); switchDetailTab('sprints', projectId, document.querySelector('.tab-btn.active')); }
+  else showToast('error','Lỗi', res.message);
+}
+
+function inlineEditSP(e, taskId, projectId, currentSP) {
+  e.stopPropagation();
+  const span = e.currentTarget;
+  const val = prompt('Nhập Story Points (để trống = chưa ước lượng):', currentSP);
+  if (val === null) return;
+  const sp = val.trim() === '' ? '' : parseInt(val, 10);
+  if (val.trim() !== '' && (isNaN(sp) || sp < 0)) { showToast('warning','','Story Points phải là số nguyên >= 0'); return; }
+  api('updateStoryPoints', { projectId, id: taskId, storyPoints: sp }).then(function(res) {
+    if (res.success) { span.innerHTML = spBadge(sp); showToast('success','','Đã cập nhật SP'); }
+    else showToast('error','Lỗi', res.message);
+  });
+}
+
+// ============================================================
+// AGILE – SPRINTS
+// ============================================================
+function renderSprintsTab(sprints, tasks, projectId, userProjRole) {
+  const canManage = STATE.user.role === 'admin' || userProjRole === 'owner';
+  const hasActive = sprints.some(function(s){return s.status==='active';});
+
+  let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
+    <span style="font-size:13px;color:var(--text-muted)">${sprints.length} Sprint</span>
+    ${canManage?`<button class="btn btn-sm btn-primary" onclick="openSprintModal('${projectId}','')"><i class="fas fa-plus"></i> Tạo Sprint</button>`:''}
+  </div>`;
+
+  if (!sprints.length) return html + '<div class="empty-state" style="padding:32px"><i class="fas fa-layer-group"></i><h3>Chưa có Sprint nào</h3><p>Tạo Sprint đầu tiên để bắt đầu Agile</p></div>';
+
+  sprints.forEach(function(s) {
+    const sprintTasks = tasks.filter(function(t){return t.sprintId===s.id;});
+    const cap = Number(s.capacity)||0;
+    const totalSp = s.totalSp || 0;
+    const completedSp = s.completedSp || 0;
+    const pct = totalSp ? Math.round(completedSp/totalSp*100) : 0;
+    const overCapacity = cap && totalSp > cap;
+    const bgColor = s.status==='active'?'#ecfdf5':s.status==='completed'?'#f5f3ff':'var(--card)';
+    const borderColor = s.status==='active'?'#10b981':s.status==='completed'?'#7c3aed':'var(--border)';
+
+    let actions = '';
+    if (canManage) {
+      if (s.status === 'planning') actions += `<button class="btn btn-sm btn-primary" onclick="confirmStartSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-play"></i> Bắt đầu</button>`;
+      if (s.status === 'active') actions += `<button class="btn btn-sm btn-outline" style="color:#dc2626;border-color:#dc2626" onclick="confirmCompleteSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-flag-checkered"></i> Kết thúc Sprint</button>`;
+      if (s.status !== 'active') actions += `<button class="btn btn-sm btn-outline" onclick="openSprintModal('${projectId}','${s.id}')"><i class="fas fa-edit"></i></button>`;
+      if (s.status !== 'active') actions += `<button class="btn btn-sm btn-danger" onclick="confirmDeleteSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-trash"></i></button>`;
+    }
+    actions += `<button class="btn btn-sm btn-outline" onclick="openSprintBoard('${s.id}','${projectId}')"><i class="fas fa-columns"></i> Bảng</button>`;
+
+    html += `<div style="background:${bgColor};border:1px solid ${borderColor};border-radius:8px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <div>
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:4px">
+            ${sprintStatusBadge(s.status)}
+            <span style="font-weight:700;font-size:14px">${esc(s.name)}</span>
+            <span style="font-size:12px;color:var(--text-muted)">${fmtDate(s.startDate)||'?'} → ${fmtDate(s.endDate)||'?'}</span>
+          </div>
+          ${s.goal?`<div style="font-size:12px;color:var(--text-muted);font-style:italic">"${esc(s.goal)}"</div>`:''}
+        </div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">${actions}</div>
+      </div>
+      <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+        <span style="font-size:13px"><i class="fas fa-tasks" style="color:var(--primary)"></i> ${sprintTasks.length} issues</span>
+        <span style="font-size:13px"><i class="fas fa-fire" style="color:#f59e0b"></i> ${totalSp} SP${cap?` / ${cap} capacity`:''}</span>
+        ${overCapacity?`<span style="font-size:11px;font-weight:700;color:#dc2626;background:#fee2e2;padding:2px 8px;border-radius:10px"><i class="fas fa-exclamation-triangle"></i> Vượt Capacity!</span>`:''}
+        ${s.status==='active'?`<span style="font-size:12px;color:#059669;font-weight:600">${completedSp}/${totalSp} SP done (${pct}%)</span>`:''}
+      </div>
+      ${s.status==='active'&&totalSp?`<div class="progress-bar" style="height:6px"><div class="progress-fill" style="width:${pct}%;background:#10b981"></div></div>`:''}
+      ${sprintTasks.length?`<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:4px">${sprintTasks.slice(0,8).map(function(t){return`<span style="font-size:11px;padding:2px 8px;background:var(--bg);border-radius:10px;border:1px solid var(--border)">${issueTypeBadge(t.issueType||'task')} ${esc(t.title.substring(0,30))}${t.title.length>30?'…':''}</span>`;}).join('')}${sprintTasks.length>8?`<span style="font-size:11px;color:var(--text-muted);padding:2px 8px">+${sprintTasks.length-8} nữa...</span>`:''}</div>`:''}
+    </div>`;
+  });
+  return html;
+}
+
+function openSprintModal(projectId, sprintId) {
+  const sprint = (window._detailSprints||[]).find(function(s){return s.id===sprintId;});
+  const isEdit = !!sprintId && !!sprint;
+  openModal(`${isEdit?'Chỉnh sửa':'Tạo'} Sprint`, `
+    <div class="form-group">
+      <label>Tên Sprint <span style="color:var(--danger)">*</span></label>
+      <input type="text" class="form-control no-icon" id="f-sprint-name" value="${esc(sprint?.name||'')}" placeholder="VD: Sprint 1">
+    </div>
+    <div class="form-group">
+      <label>Sprint Goal</label>
+      <textarea class="form-control no-icon" id="f-sprint-goal" placeholder="Mục tiêu của Sprint này...">${esc(sprint?.goal||'')}</textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label>Ngày bắt đầu</label>
+        <input type="date" class="form-control no-icon" id="f-sprint-start" value="${sprint?.startDate||''}">
+      </div>
+      <div class="form-group">
+        <label>Ngày kết thúc</label>
+        <input type="date" class="form-control no-icon" id="f-sprint-end" value="${sprint?.endDate||''}">
+      </div>
+    </div>
+    <div class="form-group">
+      <label>Capacity (Story Points)</label>
+      <input type="number" class="form-control no-icon" id="f-sprint-cap" value="${sprint?.capacity||''}" placeholder="VD: 40" min="0">
+    </div>
+  `, [
+    { text: 'Hủy', cls: 'btn-outline', action: 'closeModal()' },
+    { text: isEdit?'Cập nhật':'Tạo Sprint', cls: 'btn-primary', action: `saveSprint('${projectId}','${isEdit?sprintId:''}')` }
+  ]);
+}
+
+async function saveSprint(projectId, sprintId) {
+  const name = document.getElementById('f-sprint-name').value.trim();
+  if (!name) { showToast('warning','Lỗi','Vui lòng nhập tên Sprint'); return; }
+  const data = {
+    projectId, name,
+    goal: document.getElementById('f-sprint-goal').value.trim(),
+    startDate: document.getElementById('f-sprint-start').value,
+    endDate: document.getElementById('f-sprint-end').value,
+    capacity: document.getElementById('f-sprint-cap').value
+  };
+  try {
+    setModalLoading(true);
+    const res = await api(sprintId ? 'updateSprint' : 'createSprint', sprintId ? Object.assign({ id: sprintId }, data) : data);
+    if (res.success) {
+      showToast('success','Thành công', res.message);
+      closeModal();
+      const btn = document.querySelector('.tab-btn.active');
+      if (btn) switchDetailTab('sprints', projectId, btn);
+    } else showToast('error','Lỗi', res.message);
+  } catch(e) { showToast('error','Lỗi','Không thể lưu Sprint'); }
+  setModalLoading(false);
+}
+
+function confirmStartSprint(projectId, sprintId, name) {
+  const sprint = (window._detailSprints||[]).find(function(s){return s.id===sprintId;}) || {};
+  openModal('Bắt đầu Sprint', `
+    <div class="confirm-icon"><i class="fas fa-play-circle" style="color:var(--primary)"></i></div>
+    <div class="confirm-text">Bắt đầu Sprint <strong>"${esc(name)}"</strong>?<br><span style="font-size:13px;color:var(--text-muted)">Chỉ được có 1 Sprint ACTIVE trong dự án. Sau khi bắt đầu, start date sẽ bị khóa.</span></div>
+    <div class="form-group" style="margin-top:12px"><label>Ngày bắt đầu</label><input type="date" class="form-control no-icon" id="f-sprint-start-date" value="${sprint.startDate||new Date().toISOString().split('T')[0]}"></div>
+  `, [
+    { text: 'Hủy', cls: 'btn-outline', action: 'closeModal()' },
+    { text: 'Bắt đầu Sprint', cls: 'btn-primary', action: `doStartSprint('${projectId}','${sprintId}')` }
+  ]);
+}
+
+async function doStartSprint(projectId, sprintId) {
+  const startDate = (document.getElementById('f-sprint-start-date')||{value:''}).value;
+  try {
+    setModalLoading(true);
+    const res = await api('startSprint', { projectId, id: sprintId, startDate });
+    if (res.success) {
+      showToast('success','','Sprint đã bắt đầu!');
+      closeModal();
+      await openProjectDetail(projectId);
+    } else showToast('error','Lỗi', res.message);
+  } catch(e) { showToast('error','Lỗi','Không thể bắt đầu Sprint'); }
+  setModalLoading(false);
+}
+
+function confirmCompleteSprint(projectId, sprintId, name) {
+  const sprint = (window._detailSprints||[]).find(function(s){return s.id===sprintId;}) || {};
+  openModal('Kết thúc Sprint', `
+    <div class="confirm-icon"><i class="fas fa-flag-checkered" style="color:#7c3aed"></i></div>
+    <div class="confirm-text">Kết thúc Sprint <strong>"${esc(name)}"</strong>?<br><span style="font-size:13px;color:var(--text-muted)">Issue chưa hoàn thành sẽ tự động chuyển về <strong>Backlog</strong>. Hành động này không thể hoàn tác.</span></div>
+  `, [
+    { text: 'Hủy', cls: 'btn-outline', action: 'closeModal()' },
+    { text: 'Kết thúc Sprint', cls: 'btn-danger', action: `doCompleteSprint('${projectId}','${sprintId}')` }
+  ]);
+}
+
+async function doCompleteSprint(projectId, sprintId) {
+  try {
+    setModalLoading(true);
+    const res = await api('completeSprint', { projectId, id: sprintId });
+    if (res.success) {
+      showToast('success','', res.message);
+      closeModal();
+      await openProjectDetail(projectId);
+    } else showToast('error','Lỗi', res.message);
+  } catch(e) { showToast('error','Lỗi','Không thể kết thúc Sprint'); }
+  setModalLoading(false);
+}
+
+function confirmDeleteSprint(projectId, sprintId, name) {
+  openModal('Xóa Sprint', `
+    <div class="confirm-icon"><i class="fas fa-trash-alt" style="color:var(--danger)"></i></div>
+    <div class="confirm-text">Xóa Sprint <strong>"${esc(name)}"</strong>?<br><span style="color:var(--text-muted);font-size:13px">Tất cả issue trong Sprint sẽ được chuyển về Backlog.</span></div>
+  `, [
+    { text: 'Hủy', cls: 'btn-outline', action: 'closeModal()' },
+    { text: 'Xóa Sprint', cls: 'btn-danger', action: `doDeleteSprint('${projectId}','${sprintId}')` }
+  ]);
+}
+
+async function doDeleteSprint(projectId, sprintId) {
+  try {
+    setModalLoading(true);
+    const res = await api('deleteSprint', { projectId, id: sprintId });
+    if (res.success) {
+      showToast('success','','Đã xóa Sprint');
+      closeModal();
+      const btn = document.querySelector('.tab-btn.active');
+      if (btn) switchDetailTab('sprints', projectId, btn);
+    } else showToast('error','Lỗi', res.message);
+  } catch(e) { showToast('error','Lỗi','Không thể xóa Sprint'); }
+  setModalLoading(false);
+}
+
+async function openSprintBoard(sprintId, projectId) {
+  const sprintsRes = await api('getSprints', { projectId });
+  const sprints = sprintsRes.success ? sprintsRes.data : [];
+  const sprint = sprints.find(function(s){return s.id===sprintId;}) || {};
+  const tasksRes = await api('getTasks', { projectId });
+  const tasks = (tasksRes.success ? tasksRes.data : []).filter(function(t){return t.sprintId===sprintId;});
+  const userProjRole = (STATE.projects.find(function(p){return p.id===projectId;})||{}).userProjectRole || '';
+  const canManage = STATE.user.role==='admin'||userProjRole==='owner'||userProjRole==='member';
+
+  const cols = [
+    {key:'todo',label:'To Do',color:'#6b7280'},
+    {key:'in_progress',label:'In Progress',color:'#2563eb'},
+    {key:'review',label:'Review',color:'#d97706'},
+    {key:'completed',label:'Done',color:'#059669'}
+  ];
+  const totalSp = tasks.reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+  const doneSp = tasks.filter(function(t){return t.status==='completed';}).reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+  const pct = totalSp ? Math.round(doneSp/totalSp*100) : 0;
+
+  const colHtml = cols.map(function(col){
+    const colTasks = tasks.filter(function(t){return t.status===col.key;});
+    const colSp = colTasks.reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+    const cards = colTasks.map(function(t){
+      return `<div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px">
+          ${issueTypeBadge(t.issueType||'task')}
+          ${spBadge(t.storyPoints)}
+        </div>
+        <div style="font-size:13px;font-weight:500;margin-bottom:6px">${esc(t.title)}</div>
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <span style="font-size:11px;color:var(--text-muted)">${esc(t.assigneeName||'—')}</span>
+          ${priorityBadge(t.priority)}
+        </div>
+        ${canManage?`<div style="margin-top:6px;display:flex;gap:4px">
+          <button class="btn btn-sm btn-outline" onclick="openTaskModal('${t.id}')"><i class="fas fa-edit"></i></button>
+          ${sprint.status!=='completed'?`<button class="btn btn-sm btn-outline" style="font-size:10px" onclick="moveIssueToBacklog('${projectId}','${t.id}')">→ Backlog</button>`:''}
+        </div>`:''}
+      </div>`;
+    }).join('');
+    return `<div style="flex:1;min-width:160px;background:var(--bg);border-radius:8px;padding:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-weight:700;font-size:12px;color:${col.color};text-transform:uppercase">${col.label}</span>
+        <span style="font-size:11px;color:var(--text-muted)">${colTasks.length} · ${colSp} SP</span>
+      </div>
+      ${cards||`<div style="text-align:center;padding:24px 0;color:var(--text-muted);font-size:12px">Không có issue</div>`}
+    </div>`;
+  }).join('');
+
+  openModal(`📋 ${esc(sprint.name||'Sprint Board')}`, `
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:12px;flex-wrap:wrap">
+      ${sprintStatusBadge(sprint.status)}
+      <span style="font-size:13px;color:var(--text-muted)">${fmtDate(sprint.startDate)||'?'} → ${fmtDate(sprint.endDate)||'?'}</span>
+      <span style="font-size:13px;font-weight:600;color:var(--primary)">${doneSp}/${totalSp} SP (${pct}%)</span>
+    </div>
+    ${sprint.goal?`<div style="font-size:12px;font-style:italic;color:var(--text-muted);margin-bottom:12px">"${esc(sprint.goal)}"</div>`:''}
+    <div class="progress-bar" style="height:8px;margin-bottom:16px"><div class="progress-fill" style="width:${pct}%;background:#10b981"></div></div>
+    <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:4px">${colHtml}</div>
+  `, [{ text: 'Đóng', cls: 'btn-outline', action: 'closeModal()' }], 'modal-lg');
 }
 
 function openTaskModal(id, preProjectId) {
@@ -2409,7 +2831,7 @@ function localAPI(action, d) {
       if(d.code&&projs.find(p=>p.code===d.code)) return {success:false,message:'Mã dự án đã tồn tại'};
       const id=demoId();const ts=demoNow();
       const mgrid=d.managerId||u.userId;const mgrname=d.managerName||u.name;
-      projs.push({id,code:d.code||'',name:d.name,description:d.description||'',managerId:mgrid,managerName:mgrname,startDate:d.startDate||'',endDate:d.endDate||'',status:d.status||'active',budget:Number(d.budget)||0,createdAt:ts,updatedAt:ts});
+      projs.push({id,code:d.code||'',name:d.name,description:d.description||'',managerId:mgrid,managerName:mgrname,startDate:d.startDate||'',endDate:d.endDate||'',status:d.status||'active',budget:Number(d.budget)||0,projectType:d.projectType||'waterfall',createdAt:ts,updatedAt:ts});
       lsSet('projects',projs);
       const mems=lsGet('project_members');
       mems.push({id:demoId(),projectId:id,userId:u.userId,userName:u.name,projectRole:'owner',addedAt:ts,addedBy:u.userId});
@@ -2422,7 +2844,7 @@ function localAPI(action, d) {
       {const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===d.id&&m.userId===u.userId);if(u.role!=='admin'&&(!me||me.projectRole!=='owner')) return {success:false,message:'Bạn không có quyền chỉnh sửa dự án này'};}
       const projs=lsGet('projects');const idx=projs.findIndex(p=>p.id===d.id);
       if(idx===-1) return {success:false,message:'Không tìm thấy'};
-      Object.assign(projs[idx],{code:d.code,name:d.name,description:d.description,managerId:d.managerId,managerName:d.managerName,startDate:d.startDate,endDate:d.endDate,status:d.status,budget:Number(d.budget)||0,updatedAt:demoNow()});
+      Object.assign(projs[idx],{code:d.code,name:d.name,description:d.description,managerId:d.managerId,managerName:d.managerName,startDate:d.startDate,endDate:d.endDate,status:d.status,budget:Number(d.budget)||0,projectType:d.projectType||projs[idx].projectType||'waterfall',updatedAt:demoNow()});
       lsSet('projects',projs);return {success:true,message:'Cập nhật thành công'};
     }
     case 'deleteProject': {
@@ -2431,6 +2853,7 @@ function localAPI(action, d) {
       lsSet('projects',lsGet('projects').filter(p=>p.id!==d.id));
       lsSet('tasks',lsGet('tasks').filter(t=>t.projectId!==d.id));
       lsSet('project_members',lsGet('project_members').filter(m=>m.projectId!==d.id));
+      lsSet('sprints',lsGet('sprints').filter(s=>s.projectId!==d.id));
       return {success:true,message:'Xóa thành công'};
     }
     case 'getTasks': {
@@ -2453,7 +2876,7 @@ function localAPI(action, d) {
       if(issueType==='bug'&&parentTask&&(parentTask.issueType||'task')!=='epic') return {success:false,message:'Bug chỉ có thể thuộc Epic'};
       if(issueType==='sub_task'&&(!parentTask||['task','user_story','bug'].indexOf(parentTask.issueType||'task')===-1)) return {success:false,message:'Sub-task phải thuộc Task, User Story hoặc Bug'};
       const tasks=allTasks;const id=demoId();const ts=demoNow();
-      tasks.push({id,projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description||'',assigneeId:d.assigneeId||'',assigneeName:d.assigneeName||'',reviewerId:d.reviewerId||'',reviewerName:d.reviewerName||'',startDate:d.startDate||'',dueDate:d.dueDate||'',status:d.status||'todo',priority:d.priority||'medium',estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,createdAt:ts,updatedAt:ts,createdBy:u.userId,issueType,parentId:d.parentId||''});
+      tasks.push({id,projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description||'',assigneeId:d.assigneeId||'',assigneeName:d.assigneeName||'',reviewerId:d.reviewerId||'',reviewerName:d.reviewerName||'',startDate:d.startDate||'',dueDate:d.dueDate||'',status:d.status||'todo',priority:d.priority||'medium',estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,createdAt:ts,updatedAt:ts,createdBy:u.userId,issueType,parentId:d.parentId||'',sprintId:d.sprintId||'',storyPoints:d.storyPoints!==undefined&&d.storyPoints!==''?Number(d.storyPoints):'',backlogOrder:Number(d.backlogOrder)||0});
       lsSet('tasks',tasks);
       if(d.assigneeId&&d.assigneeId!==u.userId) demoAddNotif(d.assigneeId,'Công việc mới','Bạn được giao: "'+d.title+'"','task',id,'task');
       if(d.reviewerId&&d.reviewerId!==u.userId&&d.reviewerId!==d.assigneeId) demoAddNotif(d.reviewerId,'Được phân công kiểm duyệt','Bạn kiểm duyệt: "'+d.title+'"','task',id,'task');
@@ -2465,7 +2888,8 @@ function localAPI(action, d) {
       if(idx===-1) return {success:false,message:'Không tìm thấy'};
       const old=tasks[idx];
       if(u.role!=='admin'){const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===old.projectId&&m.userId===u.userId);const pr=me?me.projectRole:null;if(!pr) return {success:false,message:'Không có quyền truy cập dự án'};if(pr==='viewer') return {success:false,message:'Bạn chỉ có quyền xem'};if(pr==='member'&&old.assigneeId!==u.userId&&old.reviewerId!==u.userId) return {success:false,message:'Thành viên chỉ được sửa công việc được phân công'};}
-      Object.assign(tasks[idx],{projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description,assigneeId:d.assigneeId,assigneeName:d.assigneeName,reviewerId:d.reviewerId,reviewerName:d.reviewerName,startDate:d.startDate,dueDate:d.dueDate,status:d.status,priority:d.priority,estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,updatedAt:demoNow(),issueType:d.issueType||old.issueType||'task',parentId:d.parentId||old.parentId||''});
+      const spVal=d.storyPoints!==undefined?(d.storyPoints===''?'':Number(d.storyPoints)):(old.storyPoints!==undefined?old.storyPoints:'');
+      Object.assign(tasks[idx],{projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description,assigneeId:d.assigneeId,assigneeName:d.assigneeName,reviewerId:d.reviewerId,reviewerName:d.reviewerName,startDate:d.startDate,dueDate:d.dueDate,status:d.status,priority:d.priority,estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,updatedAt:demoNow(),issueType:d.issueType||old.issueType||'task',parentId:d.parentId||old.parentId||'',sprintId:d.sprintId!==undefined?d.sprintId:(old.sprintId||''),storyPoints:spVal,backlogOrder:d.backlogOrder!==undefined?Number(d.backlogOrder)||0:(Number(old.backlogOrder)||0)});
       lsSet('tasks',tasks);
       if(d.status==='review'&&old.status!=='review'&&old.reviewerId) demoAddNotif(old.reviewerId,'Cần kiểm duyệt','"'+(d.title||old.title)+'" cần kiểm duyệt','task',d.id,'task');
       return {success:true,message:'Cập nhật thành công'};
@@ -2481,6 +2905,78 @@ function localAPI(action, d) {
       lsSet('tasks',allTasks.filter(t=>!toDelete.has(t.id)));
       const cnt=toDelete.size;
       return {success:true,message:cnt>1?'Đã xóa '+cnt+' công việc':'Xóa thành công'};
+    }
+    case 'getSprints': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const tasks=lsGet('tasks');
+      const sprs=lsGet('sprints').filter(s=>s.projectId===d.projectId);
+      return {success:true,data:sprs.map(s=>{
+        const st=tasks.filter(t=>t.sprintId===s.id);
+        const totalSp=st.reduce((a,t)=>a+(Number(t.storyPoints)||0),0);
+        const completedSp=st.filter(t=>t.status==='completed').reduce((a,t)=>a+(Number(t.storyPoints)||0),0);
+        return Object.assign({},s,{totalSp,completedSp,issueCount:st.length});
+      }).sort((a,b)=>({planning:0,active:1,completed:2}[a.status]||0)-({planning:0,active:1,completed:2}[b.status]||0))};
+    }
+    case 'createSprint': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      {const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===d.projectId&&m.userId===u.userId);if(u.role!=='admin'&&(!me||me.projectRole!=='owner')) return {success:false,message:'Không có quyền'};}
+      const sprs=lsGet('sprints');const id=demoId();const ts=demoNow();
+      sprs.push({id,projectId:d.projectId,name:d.name,goal:d.goal||'',startDate:d.startDate||'',endDate:d.endDate||'',status:'planning',capacity:Number(d.capacity)||0,totalSpSnapshot:0,createdAt:ts,createdBy:u.userId});
+      lsSet('sprints',sprs);return {success:true,id,message:'Tạo Sprint thành công'};
+    }
+    case 'updateSprint': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const sprs=lsGet('sprints');const idx=sprs.findIndex(s=>s.id===d.id);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      Object.assign(sprs[idx],{name:d.name,goal:d.goal||'',startDate:d.startDate||'',endDate:d.endDate||'',capacity:Number(d.capacity)||0});
+      lsSet('sprints',sprs);return {success:true,message:'Cập nhật Sprint thành công'};
+    }
+    case 'startSprint': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const sprs=lsGet('sprints');
+      if(sprs.some(s=>s.projectId===d.projectId&&s.status==='active')) return {success:false,message:'Đã có Sprint đang chạy trong dự án này'};
+      const idx=sprs.findIndex(s=>s.id===d.id);if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      const tasks=lsGet('tasks');
+      const totalSp=tasks.filter(t=>t.sprintId===d.id).reduce((a,t)=>a+(Number(t.storyPoints)||0),0);
+      Object.assign(sprs[idx],{status:'active',totalSpSnapshot:totalSp,startDate:d.startDate||sprs[idx].startDate||demoNow().split('T')[0]});
+      lsSet('sprints',sprs);return {success:true,message:'Sprint đã bắt đầu!'};
+    }
+    case 'completeSprint': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const sprs=lsGet('sprints');const idx=sprs.findIndex(s=>s.id===d.id);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      const tasks=lsGet('tasks');let moved=0;
+      tasks.forEach(t=>{if(t.sprintId===d.id&&t.status!=='completed'){t.sprintId='';t.backlogOrder=0;moved++;}});
+      lsSet('tasks',tasks);sprs[idx].status='completed';lsSet('sprints',sprs);
+      return {success:true,message:'Sprint kết thúc. '+moved+' issue chưa done đã chuyển về Backlog.'};
+    }
+    case 'deleteSprint': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const sprs=lsGet('sprints');const spr=sprs.find(s=>s.id===d.id);
+      if(!spr) return {success:false,message:'Không tìm thấy'};
+      if(spr.status==='active') return {success:false,message:'Không thể xóa Sprint đang chạy'};
+      const tasks=lsGet('tasks');tasks.forEach(t=>{if(t.sprintId===d.id)t.sprintId='';});
+      lsSet('tasks',tasks);lsSet('sprints',sprs.filter(s=>s.id!==d.id));
+      return {success:true,message:'Đã xóa Sprint'};
+    }
+    case 'moveIssuesToSprint': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const tasks=lsGet('tasks');
+      (d.issueIds||[]).forEach(issueId=>{const t=tasks.find(x=>x.id===issueId);if(t)t.sprintId=d.sprintId||'';});
+      lsSet('tasks',tasks);return {success:true,message:(d.issueIds||[]).length+' issue đã chuyển'};
+    }
+    case 'updateStoryPoints': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const tasks=lsGet('tasks');const t=tasks.find(x=>x.id===d.id);
+      if(!t) return {success:false,message:'Không tìm thấy'};
+      t.storyPoints=d.storyPoints;lsSet('tasks',tasks);
+      return {success:true,message:'Cập nhật SP thành công'};
+    }
+    case 'updateBacklogOrder': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const tasks=lsGet('tasks');
+      (d.orders||[]).forEach(item=>{const t=tasks.find(x=>x.id===item.id);if(t)t.backlogOrder=Number(item.backlogOrder)||0;});
+      lsSet('tasks',tasks);return {success:true};
     }
     case 'getNotifications': {
       if(!u) return {success:false,message:'Hết phiên'};
@@ -2555,9 +3051,9 @@ function seedDemoData() {
   const past=n=>{const d=new Date();d.setDate(d.getDate()-n);return d.toISOString().split('T')[0];};
   const future=n=>{const d=new Date();d.setDate(d.getDate()+n);return d.toISOString().split('T')[0];};
   lsSet('projects',[
-    {id:p1,code:'DA001',name:'Website Thương mại điện tử',description:'Xây dựng nền tảng bán hàng B2C',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2025-01-01',endDate:'2025-06-30',status:'active',budget:150000000,createdAt:demoNow(),updatedAt:demoNow()},
-    {id:p2,code:'DA002',name:'Ứng dụng Mobile CRM',description:'Quản lý quan hệ khách hàng mobile',managerId:adminId,managerName:'Administrator',startDate:'2025-02-01',endDate:'2025-09-30',status:'active',budget:80000000,createdAt:demoNow(),updatedAt:demoNow()},
-    {id:p3,code:'DA003',name:'Hệ thống ERP Nội bộ',description:'Triển khai ERP toàn công ty',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2024-06-01',endDate:'2024-12-31',status:'completed',budget:200000000,createdAt:demoNow(),updatedAt:demoNow()}
+    {id:p1,code:'DA001',name:'Website Thương mại điện tử',description:'Xây dựng nền tảng bán hàng B2C',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2025-01-01',endDate:'2025-06-30',status:'active',budget:150000000,projectType:'agile',createdAt:demoNow(),updatedAt:demoNow()},
+    {id:p2,code:'DA002',name:'Ứng dụng Mobile CRM',description:'Quản lý quan hệ khách hàng mobile',managerId:adminId,managerName:'Administrator',startDate:'2025-02-01',endDate:'2025-09-30',status:'active',budget:80000000,projectType:'agile',createdAt:demoNow(),updatedAt:demoNow()},
+    {id:p3,code:'DA003',name:'Hệ thống ERP Nội bộ',description:'Triển khai ERP toàn công ty',managerId:mgrId,managerName:'Nguyễn Văn Manager',startDate:'2024-06-01',endDate:'2024-12-31',status:'completed',budget:200000000,projectType:'waterfall',createdAt:demoNow(),updatedAt:demoNow()}
   ]);
   const t1=demoNow();
   // Pre-declare Epic/Task IDs that are referenced by children
@@ -2609,6 +3105,34 @@ function seedDemoData() {
     {id:demoId(),projectId:p3,userId:empId,userName:'Trần Thị Employee',projectRole:'member',addedAt:t1,addedBy:'system'},
     {id:demoId(),projectId:p3,userId:adminId,userName:'Administrator',projectRole:'viewer',addedAt:t1,addedBy:'system'}
   ]);
+  // Sprints for Agile projects
+  const sp1=demoId(),sp2=demoId(),sp3=demoId();
+  lsSet('sprints',[
+    // DA001 - Website TMĐT (Agile)
+    {id:sp1,projectId:p1,name:'Sprint 1 – Nền tảng Frontend',goal:'Hoàn thiện toàn bộ module giao diện trang chủ và danh mục',startDate:past(28),endDate:past(14),status:'completed',capacity:30,totalSpSnapshot:28,createdAt:t1,createdBy:mgrId},
+    {id:sp2,projectId:p1,name:'Sprint 2 – API & Backend',goal:'Hoàn thiện API sản phẩm và tích hợp thanh toán',startDate:past(14),endDate:future(0),status:'active',capacity:35,totalSpSnapshot:32,createdAt:t1,createdBy:mgrId},
+    {id:sp3,projectId:p1,name:'Sprint 3 – SEO & Launch',goal:'Tối ưu hiệu suất, SEO và chuẩn bị ra mắt',startDate:future(1),endDate:future(14),status:'planning',capacity:25,totalSpSnapshot:0,createdAt:t1,createdBy:mgrId},
+    // DA002 - Mobile CRM (Agile)
+    {id:demoId(),projectId:p2,name:'Sprint 1 – Phân tích & Thiết kế',goal:'Hoàn thành phân tích yêu cầu và thiết kế database',startDate:past(25),endDate:past(11),status:'completed',capacity:20,totalSpSnapshot:18,createdAt:t1,createdBy:adminId},
+    {id:demoId(),projectId:p2,name:'Sprint 2 – Core Features',goal:'Phát triển màn hình danh sách khách hàng',startDate:past(5),endDate:future(9),status:'active',capacity:30,totalSpSnapshot:15,createdAt:t1,createdBy:adminId}
+  ]);
+  // Assign tasks to sprints (update sprintId and storyPoints in task data)
+  const tasks=lsGet('tasks');
+  tasks.forEach(function(t){
+    if(t.projectId===p1){
+      if(t.id===tk1) {t.sprintId=sp1;t.storyPoints=8;}
+      else if(t.issueType==='sub_task'&&t.parentId===tk1){t.sprintId=sp1;t.storyPoints=3;}
+      else if(t.id===tk2){t.sprintId=sp2;t.storyPoints=13;}
+      else if(t.issueType==='sub_task'&&t.parentId===tk2){t.sprintId=sp2;t.storyPoints=5;}
+      else if(t.issueType==='task'&&t.parentId===ep2&&t.title.includes('thanh toán')){t.sprintId=sp2;t.storyPoints=8;}
+      else if(t.issueType==='bug'&&t.parentId===ep2){t.sprintId=sp2;t.storyPoints=5;}
+    }
+    if(t.projectId===p2){
+      if(t.id===tk3){t.sprintId=lsGet('sprints').find(function(s){return s.projectId===p2&&s.status==='completed';})?.id||'';t.storyPoints=5;}
+      if(t.id===tk4){t.sprintId=lsGet('sprints').find(function(s){return s.projectId===p2&&s.status==='active';})?.id||'';t.storyPoints=8;}
+    }
+  });
+  lsSet('tasks',tasks);
   localStorage.setItem('pm_seeded','1');
 }
 
