@@ -1791,7 +1791,7 @@ function openModal(title, body, buttons, extraClass) {
   }).join('');
   document.getElementById('modal-container').innerHTML = `
     <div class="modal-overlay" onclick="handleOverlayClick(event)">
-      <div class="modal ${extraClass||'}" onclick="event.stopPropagation()">
+      <div class="modal ${extraClass||''}" onclick="event.stopPropagation()">
         <div class="modal-header">
           <span class="modal-title">${title}</span>
           <button class="modal-close" onclick="closeModal()"><i class="fas fa-times"></i></button>
