@@ -772,7 +772,7 @@ function filterProjects() {
   const q = (document.getElementById('proj-search')||{value:''}).value.toLowerCase();
   const status = (document.getElementById('proj-filter-status')||{value:''}).value;
   let filtered = STATE.projects.filter(function(p) {
-    const matchQ = !q || p.name.toLowerCase().includes(q) || (p.code||'').toLowerCase().includes(q) || (p.managerName||'').toLowerCase().includes(q);
+    const matchQ = !q || String(p.name||'').toLowerCase().includes(q) || String(p.code||'').toLowerCase().includes(q) || String(p.managerName||'').toLowerCase().includes(q);
     const matchS = !status || p.status === status;
     return matchQ && matchS;
   });
@@ -1091,7 +1091,7 @@ function filterTasks() {
   const priority = (document.getElementById('task-filter-priority')||{value:''}).value;
   const projectId = (document.getElementById('task-filter-project')||{value:''}).value;
   let filtered = STATE.tasks.filter(function(t) {
-    const mQ = !q || t.title.toLowerCase().includes(q) || (t.assigneeName||'').toLowerCase().includes(q) || (t.projectName||'').toLowerCase().includes(q);
+    const mQ = !q || String(t.title||'').toLowerCase().includes(q) || String(t.assigneeName||'').toLowerCase().includes(q) || String(t.projectName||'').toLowerCase().includes(q);
     const mS = !status || t.status === status;
     const mP = !priority || t.priority === priority;
     const mPr = !projectId || t.projectId === projectId;
@@ -1421,7 +1421,7 @@ function filterUsers() {
   const q = (document.getElementById('user-search')||{value:''}).value.toLowerCase();
   const role = (document.getElementById('user-filter-role')||{value:''}).value;
   const filtered = STATE.users.filter(function(u) {
-    return (!q || u.name.toLowerCase().includes(q) || u.email.toLowerCase().includes(q)) && (!role || u.role === role);
+    return (!q || String(u.name||'').toLowerCase().includes(q) || String(u.email||'').toLowerCase().includes(q)) && (!role || u.role === role);
   });
   const container = document.getElementById('users-container');
   if (!container) return;

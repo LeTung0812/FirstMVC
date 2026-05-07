@@ -112,9 +112,18 @@ function sheetToObjects(sheet) {
   const data = sheet.getDataRange().getValues();
   if (data.length <= 1) return [];
   const headers = data[0];
-  return data.slice(1).map(function(row) {
+  const tz = Session.getScriptTimeZone();
+  return data.slice(1).filter(function(row) {
+    return row[0] !== '' && row[0] !== null && row[0] !== undefined;
+  }).map(function(row) {
     const obj = {};
-    headers.forEach(function(h, i) { obj[h] = row[i]; });
+    headers.forEach(function(h, i) {
+      let val = row[i];
+      if (val instanceof Date) {
+        val = Utilities.formatDate(val, tz, "yyyy-MM-dd'T'HH:mm:ss");
+      }
+      obj[h] = val;
+    });
     return obj;
   });
 }
@@ -175,7 +184,7 @@ function login(data) {
   if (!data.email || !data.password) return { success: false, message: 'Vui lòng nhập đầy đủ thông tin' };
   const users = sheetToObjects(getSheet(SHEETS.USERS));
   const hashed = hashPassword(data.password);
-  const user = users.find(function(u) { return u.email === data.email && u.password === hashed && u.isActive === true; });
+  const user = users.find(function(u) { return u.email === data.email && u.password === hashed && !!u.isActive; });
   if (!user) return { success: false, message: 'Email hoặc mật khẩu không chính xác' };
   const token = generateId();
   const session = { userId: user.id, name: user.name, email: user.email, role: user.role, department: user.department };
