@@ -1740,6 +1740,9 @@ function filterUsers() {
 function openUserModal(id) {
   const isEdit = !!id;
   const user = isEdit ? STATE.users.find(function(u){return u.id===id;}) : null;
+  const managedProjs = STATE.projects.filter(function(p) {
+    return STATE.user.role === 'admin' || p.userProjectRole === 'owner';
+  });
 
   openModal(`${isEdit?'Chỉnh sửa':'Thêm'} người dùng`, `
     <div class="form-row">
@@ -1759,7 +1762,7 @@ function openUserModal(id) {
     </div>` : ''}
     <div class="form-row">
       <div class="form-group">
-        <label>Vai trò</label>
+        <label>Vai trò hệ thống</label>
         <select class="form-control" id="f-user-role">
           <option value="employee" ${user?.role==='employee'?'selected':''}>Nhân viên</option>
           <option value="manager" ${user?.role==='manager'?'selected':''}>Quản lý</option>
@@ -1780,7 +1783,33 @@ function openUserModal(id) {
     </div>
     <div style="padding:12px;background:var(--warning-light);border-radius:6px;font-size:12px;color:#92400e">
       <i class="fas fa-key"></i> <label><input type="checkbox" id="f-user-reset"> Reset mật khẩu về mặc định (Password@123)</label>
-    </div>` : ''}
+    </div>` : `
+    <div style="margin-top:4px;border-top:1px solid var(--border);padding-top:16px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+        <i class="fas fa-folder-plus" style="color:var(--primary)"></i>
+        <span style="font-size:13px;font-weight:600;color:var(--text)">Phân quyền dự án</span>
+        <span style="font-size:11px;color:var(--text-muted)">(tùy chọn)</span>
+      </div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Thêm vào dự án</label>
+          <select class="form-control" id="f-user-assign-project"
+            onchange="var w=document.getElementById('f-user-proj-role-wrap');if(w)w.style.display=this.value?'block':'none'">
+            <option value="">-- Không phân vào dự án --</option>
+            ${managedProjs.map(function(p){return`<option value="${p.id}">${esc(p.name)}</option>`;}).join('')}
+          </select>
+        </div>
+        <div class="form-group" id="f-user-proj-role-wrap" style="display:none">
+          <label>Quyền trong dự án</label>
+          <select class="form-control" id="f-user-proj-role">
+            <option value="owner">Quản lý dự án</option>
+            <option value="member" selected>Thành viên</option>
+            <option value="viewer">Người xem</option>
+          </select>
+        </div>
+      </div>
+      ${managedProjs.length === 0 ? `<div style="font-size:12px;color:var(--text-muted);padding:8px;background:var(--bg);border-radius:6px"><i class="fas fa-info-circle"></i> Chưa có dự án nào để phân quyền</div>` : ''}
+    </div>`}
   `, [
     { text: 'Hủy', cls: 'btn-outline', action: 'closeModal()' },
     { text: isEdit?'Cập nhật':'Tạo tài khoản', cls: 'btn-primary', action: `saveUser('${isEdit?id:''}')` }
@@ -1814,6 +1843,15 @@ async function saveUser(id) {
     setModalLoading(true);
     const res = await api(isEdit ? 'updateUser' : 'createUser', isEdit ? Object.assign({ id }, data) : data);
     if (res.success) {
+      if (!isEdit) {
+        const projEl = document.getElementById('f-user-assign-project');
+        const projRoleEl = document.getElementById('f-user-proj-role');
+        if (projEl && projEl.value && res.id) {
+          const projRole = projRoleEl ? projRoleEl.value : 'member';
+          await api('addProjectMember', { projectId: projEl.value, userId: res.id, projectRole: projRole });
+          showToast('info', '', 'Đã thêm người dùng vào dự án');
+        }
+      }
       showToast('success','Thành công', res.message);
       closeModal();
       await loadUsers();
