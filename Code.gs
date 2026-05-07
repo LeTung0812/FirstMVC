@@ -53,7 +53,30 @@ function processRequest(action, data) {
 }
 
 // ==================== HELPERS ====================
-function getSpreadsheet() { return SpreadsheetApp.getActiveSpreadsheet(); }
+function getSpreadsheet() {
+  // 1. Script gắn với Sheet (bound script) — dùng trực tiếp
+  const active = SpreadsheetApp.getActiveSpreadsheet();
+  if (active) return active;
+
+  // 2. Standalone script — tìm ID đã lưu trong Script Properties
+  const props = PropertiesService.getScriptProperties();
+  const savedId = props.getProperty('SPREADSHEET_ID');
+  if (savedId) {
+    try {
+      return SpreadsheetApp.openById(savedId);
+    } catch (e) {
+      Logger.log('Saved spreadsheet ID invalid, creating new one...');
+    }
+  }
+
+  // 3. Tự động tạo Google Sheet mới và lưu ID
+  const ss = SpreadsheetApp.create('PM_Database - Quản lý Dự án');
+  props.setProperty('SPREADSHEET_ID', ss.getId());
+  Logger.log('✅ Đã tạo Google Sheet mới: ' + ss.getUrl());
+  Logger.log('📋 Spreadsheet ID: ' + ss.getId());
+  return ss;
+}
+
 function getCache() { return CacheService.getScriptCache(); }
 function generateId() { return Utilities.getUuid(); }
 function nowIso() { return new Date().toISOString(); }
@@ -117,6 +140,22 @@ function getSessionUser(token) {
 
 function refreshSession(token, user) {
   getCache().put(token, JSON.stringify(user), 28800);
+}
+
+// ==================== TIỆN ÍCH SETUP ====================
+// Chạy hàm này để xem URL Google Sheet đang dùng
+function getSpreadsheetUrl() {
+  const ss = getSpreadsheet();
+  const url = ss.getUrl();
+  Logger.log('🔗 Google Sheet URL: ' + url);
+  Logger.log('📋 Spreadsheet ID: ' + ss.getId());
+  return url;
+}
+
+// Đặt lại Spreadsheet ID thủ công (nếu muốn dùng sheet có sẵn)
+function setSpreadsheetId(id) {
+  PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', id);
+  Logger.log('✅ Đã lưu Spreadsheet ID: ' + id);
 }
 
 // ==================== INIT ====================
