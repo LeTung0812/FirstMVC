@@ -269,6 +269,7 @@ tbody tr:hover{background:#f8fafc}
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000;display:flex;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(2px);animation:fadeIn .15s ease}
 .modal{background:#fff;border-radius:var(--radius-lg);width:100%;max-width:560px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 25px 50px rgba(0,0,0,.25);animation:slideUp .2s ease}
 .modal-lg{max-width:700px}
+.modal-xl{max-width:940px}
 .modal-header{padding:20px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;flex-shrink:0}
 .modal-title{font-size:17px;font-weight:700}
 .modal-close{background:none;border:none;font-size:18px;color:var(--text-muted);cursor:pointer;padding:4px 8px;border-radius:6px;transition:var(--transition);line-height:1}
@@ -1536,7 +1537,10 @@ function renderBacklogTab(tasks, sprints, projectId, userProjRole) {
 
   let html = `<div style="margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
     <span style="font-size:13px;color:var(--text-muted)">${backlogTasks.length} issue trong Backlog</span>
-    ${canManage?`<button class="btn btn-sm btn-primary" onclick="closeModal();openTaskModal(null,'${projectId}')"><i class="fas fa-plus"></i> Thêm Issue</button>`:''}
+    ${canManage?`<div style="display:flex;gap:6px;align-items:center">
+      ${planSprints.length?`<button class="btn btn-sm btn-outline" onclick="openSprintPlanning('${projectId}')"><i class="fas fa-exchange-alt"></i> Sprint Planning</button>`:''}
+      <button class="btn btn-sm btn-primary" onclick="openTaskModal(null,'${projectId}')"><i class="fas fa-plus"></i> Thêm Issue</button>
+    </div>`:''}
   </div>`;
 
   if (!backlogTasks.length) {
@@ -1598,16 +1602,41 @@ async function moveIssueToSprint(projectId, taskId, sprintId, selectEl) {
   const res = await api('moveIssuesToSprint', { projectId, issueIds: [taskId], sprintId });
   if (res.success) {
     showToast('success','','Đã chuyển issue vào Sprint');
-    // Remove row from backlog UI
     const row = selectEl ? selectEl.closest('tr') : null;
     if (row) row.remove();
+    // Update STATE.tasks and sprint SP display
+    const stateTask = STATE.tasks.find(function(t){return t.id===taskId;});
+    const SP_TYPES = ['task','user_story','bug'];
+    if (stateTask) {
+      if (SP_TYPES.indexOf(stateTask.issueType||'task') !== -1 && stateTask.storyPoints !== '' && stateTask.storyPoints !== null) {
+        const taskSP = Number(stateTask.storyPoints) || 0;
+        const spEl = document.getElementById('sprint-sp-val-' + sprintId);
+        if (spEl) spEl.textContent = (parseInt(spEl.textContent, 10) || 0) + taskSP;
+      }
+      stateTask.sprintId = sprintId;
+    }
+    if (window._sppState) {
+      const sppTask = window._sppState.tasks.find(function(t){return t.id===taskId;});
+      if (sppTask) { sppTask.sprintId = sprintId; sppRender(); }
+    }
   } else { showToast('error','Lỗi', res.message); if(selectEl) selectEl.value = ''; }
 }
 
 async function moveIssueToBacklog(projectId, taskId) {
+  const stateTask = STATE.tasks.find(function(t){return t.id===taskId;});
+  const oldSprintId = stateTask ? stateTask.sprintId : '';
   const res = await api('moveIssuesToSprint', { projectId, issueIds: [taskId], sprintId: '' });
-  if (res.success) { showToast('success','','Đã chuyển về Backlog'); switchDetailTab('sprints', projectId, document.querySelector('.tab-btn.active')); }
-  else showToast('error','Lỗi', res.message);
+  if (res.success) {
+    showToast('success','','Đã chuyển về Backlog');
+    const SP_TYPES = ['task','user_story','bug'];
+    if (stateTask && oldSprintId && SP_TYPES.indexOf(stateTask.issueType||'task') !== -1 && stateTask.storyPoints !== '' && stateTask.storyPoints !== null) {
+      const taskSP = Number(stateTask.storyPoints) || 0;
+      const spEl = document.getElementById('sprint-sp-val-' + oldSprintId);
+      if (spEl) spEl.textContent = Math.max(0, (parseInt(spEl.textContent, 10) || 0) - taskSP);
+    }
+    if (stateTask) stateTask.sprintId = '';
+    switchDetailTab('sprints', projectId, document.querySelector('.tab-btn.active'));
+  } else showToast('error','Lỗi', res.message);
 }
 
 function inlineEditSP(e, taskId, projectId, currentSP) {
@@ -1618,8 +1647,23 @@ function inlineEditSP(e, taskId, projectId, currentSP) {
   const sp = val.trim() === '' ? '' : parseInt(val, 10);
   if (val.trim() !== '' && (isNaN(sp) || sp < 0)) { showToast('warning','','Story Points phải là số nguyên >= 0'); return; }
   api('updateStoryPoints', { projectId, id: taskId, storyPoints: sp }).then(function(res) {
-    if (res.success) { span.innerHTML = spBadge(sp); showToast('success','','Đã cập nhật SP'); }
-    else showToast('error','Lỗi', res.message);
+    if (res.success) {
+      span.innerHTML = spBadge(sp);
+      showToast('success','','Đã cập nhật SP');
+      const stateTask = STATE.tasks.find(function(t){return t.id===taskId;});
+      const SP_TYPES = ['task','user_story','bug'];
+      if (stateTask && stateTask.sprintId && SP_TYPES.indexOf(stateTask.issueType||'task') !== -1) {
+        const oldSP = stateTask.storyPoints !== '' && stateTask.storyPoints !== null ? Number(stateTask.storyPoints)||0 : 0;
+        const newSP = sp === '' ? 0 : Number(sp);
+        const spEl = document.getElementById('sprint-sp-val-' + stateTask.sprintId);
+        if (spEl) spEl.textContent = Math.max(0, (parseInt(spEl.textContent, 10) || 0) - oldSP + newSP);
+      }
+      if (stateTask) stateTask.storyPoints = sp;
+      if (window._sppState) {
+        const sppTask = window._sppState.tasks.find(function(t){return t.id===taskId;});
+        if (sppTask) { sppTask.storyPoints = sp; sppRenderSprint(window._sppState.sprintId); }
+      }
+    } else showToast('error','Lỗi', res.message);
   });
 }
 
@@ -1632,7 +1676,10 @@ function renderSprintsTab(sprints, tasks, projectId, userProjRole) {
 
   let html = `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:8px">
     <span style="font-size:13px;color:var(--text-muted)">${sprints.length} Sprint</span>
-    ${canManage?`<button class="btn btn-sm btn-primary" onclick="openSprintModal('${projectId}','')"><i class="fas fa-plus"></i> Tạo Sprint</button>`:''}
+    ${canManage?`<div style="display:flex;gap:6px">
+      <button class="btn btn-sm btn-outline" onclick="openSprintPlanning('${projectId}')"><i class="fas fa-exchange-alt"></i> Sprint Planning</button>
+      <button class="btn btn-sm btn-primary" onclick="openSprintModal('${projectId}','')"><i class="fas fa-plus"></i> Tạo Sprint</button>
+    </div>`:''}
   </div>`;
 
   if (!sprints.length) return html + '<div class="empty-state" style="padding:32px"><i class="fas fa-layer-group"></i><h3>Chưa có Sprint nào</h3><p>Tạo Sprint đầu tiên để bắt đầu Agile</p></div>';
@@ -1649,7 +1696,7 @@ function renderSprintsTab(sprints, tasks, projectId, userProjRole) {
 
     let actions = '';
     if (canManage) {
-      if (s.status === 'planning') actions += `<button class="btn btn-sm btn-primary" onclick="confirmStartSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-play"></i> Bắt đầu</button>`;
+      if (s.status === 'planning') actions += `<button class="btn btn-sm btn-outline" onclick="openSprintPlanning('${projectId}','${s.id}')"><i class="fas fa-exchange-alt"></i> Planning</button><button class="btn btn-sm btn-primary" onclick="confirmStartSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-play"></i> Bắt đầu</button>`;
       if (s.status === 'active') actions += `<button class="btn btn-sm btn-outline" style="color:#dc2626;border-color:#dc2626" onclick="confirmCompleteSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-flag-checkered"></i> Kết thúc Sprint</button>`;
       if (s.status !== 'active') actions += `<button class="btn btn-sm btn-outline" onclick="openSprintModal('${projectId}','${s.id}')"><i class="fas fa-edit"></i></button>`;
       if (s.status !== 'active') actions += `<button class="btn btn-sm btn-danger" onclick="confirmDeleteSprint('${projectId}','${s.id}','${esc(s.name)}')"><i class="fas fa-trash"></i></button>`;
@@ -1670,7 +1717,7 @@ function renderSprintsTab(sprints, tasks, projectId, userProjRole) {
       </div>
       <div style="display:flex;gap:16px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
         <span style="font-size:13px"><i class="fas fa-tasks" style="color:var(--primary)"></i> ${sprintTasks.length} issues</span>
-        <span style="font-size:13px"><i class="fas fa-fire" style="color:#f59e0b"></i> ${totalSp} SP${cap?` / ${cap} capacity`:''}</span>
+        <span style="font-size:13px"><i class="fas fa-fire" style="color:#f59e0b"></i> <span id="sprint-sp-val-${s.id}">${totalSp}</span> SP${cap?` / ${cap} capacity`:''}</span>
         ${overCapacity?`<span style="font-size:11px;font-weight:700;color:#dc2626;background:#fee2e2;padding:2px 8px;border-radius:10px"><i class="fas fa-exclamation-triangle"></i> Vượt Capacity!</span>`:''}
         ${s.status==='active'?`<span style="font-size:12px;color:#059669;font-weight:600">${completedSp}/${totalSp} SP done (${pct}%)</span>`:''}
       </div>
@@ -1825,13 +1872,15 @@ async function openSprintBoard(sprintId, projectId) {
     {key:'review',label:'Review',color:'#d97706'},
     {key:'completed',label:'Done',color:'#059669'}
   ];
-  const totalSp = tasks.reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
-  const doneSp = tasks.filter(function(t){return t.status==='completed';}).reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+  const SP_BOARD_TYPES = ['task','user_story','bug'];
+  const spEligTasks = tasks.filter(function(t){ return SP_BOARD_TYPES.indexOf(t.issueType||'task')!==-1&&t.storyPoints!==''&&t.storyPoints!==null&&t.storyPoints!==undefined; });
+  const totalSp = spEligTasks.reduce(function(a,t){return a+Number(t.storyPoints);},0);
+  const doneSp = spEligTasks.filter(function(t){return t.status==='completed';}).reduce(function(a,t){return a+Number(t.storyPoints);},0);
   const pct = totalSp ? Math.round(doneSp/totalSp*100) : 0;
 
   const colHtml = cols.map(function(col){
     const colTasks = tasks.filter(function(t){return t.status===col.key;});
-    const colSp = colTasks.reduce(function(a,t){return a+(Number(t.storyPoints)||0);},0);
+    const colSp = colTasks.filter(function(t){ return SP_BOARD_TYPES.indexOf(t.issueType||'task')!==-1&&t.storyPoints!==''&&t.storyPoints!==null&&t.storyPoints!==undefined; }).reduce(function(a,t){return a+Number(t.storyPoints);},0);
     const cards = colTasks.map(function(t){
       return `<div style="background:var(--card);border:1px solid var(--border);border-radius:6px;padding:10px;margin-bottom:8px">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:6px;margin-bottom:6px">
@@ -1868,6 +1917,160 @@ async function openSprintBoard(sprintId, projectId) {
     <div class="progress-bar" style="height:8px;margin-bottom:16px"><div class="progress-fill" style="width:${pct}%;background:#10b981"></div></div>
     <div style="display:flex;gap:12px;overflow-x:auto;padding-bottom:4px">${colHtml}</div>
   `, [{ text: 'Đóng', cls: 'btn-outline', action: 'closeModal()' }], 'modal-lg');
+}
+
+// ============================================================
+// SPRINT PLANNING (DRAG & DROP)
+// ============================================================
+window._sppState = null;
+var _sppDragId = null;
+var _sppDragPanel = null;
+
+async function openSprintPlanning(projectId, initialSprintId) {
+  const [tasksRes, sprintsRes] = await Promise.all([
+    api('getTasks', { projectId }),
+    api('getSprints', { projectId })
+  ]);
+  const tasks = tasksRes.success ? tasksRes.data : [];
+  const sprints = sprintsRes.success ? sprintsRes.data : [];
+  const planSprints = sprints.filter(function(s){ return s.status === 'planning' || s.status === 'active'; });
+  if (!planSprints.length) { showToast('warning','','Không có Sprint nào ở trạng thái Planning hoặc Active'); return; }
+
+  window._sppState = {
+    projectId: projectId,
+    tasks: tasks.map(function(t){ return Object.assign({}, t); }),
+    sprints: sprints,
+    sprintId: (initialSprintId && planSprints.find(function(s){return s.id===initialSprintId;})) ? initialSprintId : planSprints[0].id
+  };
+
+  const sprintOpts = planSprints.map(function(s){
+    return `<option value="${s.id}" ${s.id===window._sppState.sprintId?'selected':''}>${sprintStatusLabel(s.status)} ${esc(s.name)}</option>`;
+  }).join('');
+
+  openModal('🎯 Sprint Planning', `
+    <div style="display:flex;height:62vh;gap:0;margin:-8px -8px -0px -8px;overflow:hidden">
+      <div style="flex:0 0 370px;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0">
+          <div style="font-weight:700;font-size:13px;margin-bottom:2px"><i class="fas fa-inbox" style="color:#7c3aed"></i> Product Backlog</div>
+          <div style="font-size:11px;color:var(--text-muted)" id="spp-backlog-info"></div>
+        </div>
+        <div id="spp-backlog-panel" style="flex:1;overflow-y:auto;padding:8px"
+             ondragover="sppPanelDragOver(event)" ondrop="sppDropToBacklog(event,'${projectId}')"></div>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;min-width:0">
+        <div style="padding:10px 14px;border-bottom:1px solid var(--border);background:var(--bg);flex-shrink:0">
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <select id="spp-sprint-sel" class="form-control" style="flex:1;min-width:180px;height:32px;font-size:12px;padding:0 8px" onchange="sppSwitchSprint(this.value)">${sprintOpts}</select>
+            <div id="spp-sp-info" style="font-size:12px;white-space:nowrap;font-weight:600"></div>
+          </div>
+        </div>
+        <div id="spp-sprint-panel" style="flex:1;overflow-y:auto;padding:8px"
+             ondragover="sppPanelDragOver(event)" ondrop="sppDropToSprint(event,'${projectId}')"></div>
+        <div id="spp-footer" style="padding:10px 14px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;flex-shrink:0"></div>
+      </div>
+    </div>
+  `, [{ text: 'Đóng', cls: 'btn-outline', action: 'closeModal();sppCleanup("' + projectId + '")' }], 'modal-xl');
+  sppRender();
+}
+
+function sprintStatusLabel(s) { return {planning:'[Planning]',active:'[Active]',completed:'[Done]'}[s]||''; }
+
+function sppCleanup(projectId) {
+  window._sppState = null;
+  if (projectId) openProjectDetail(projectId);
+}
+
+function sppRender() {
+  if (!window._sppState) return;
+  var tasks = window._sppState.tasks, sprintId = window._sppState.sprintId;
+  var backlogTasks = tasks.filter(function(t){ return !t.sprintId && (t.issueType||'task')!=='epic' && (t.issueType||'task')!=='sub_task'; });
+  var backlogInfo = document.getElementById('spp-backlog-info');
+  if (backlogInfo) backlogInfo.textContent = backlogTasks.length + ' issues sẵn sàng';
+  var backlogPanel = document.getElementById('spp-backlog-panel');
+  if (backlogPanel) backlogPanel.innerHTML = backlogTasks.length
+    ? backlogTasks.map(function(t){ return sppItemHtml(t,'backlog'); }).join('')
+    : '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:12px"><i class="fas fa-check-circle" style="font-size:20px;margin-bottom:6px;display:block;color:#10b981"></i>Backlog trống</div>';
+  sppRenderSprint(sprintId);
+}
+
+function sppRenderSprint(sprintId) {
+  if (!window._sppState) return;
+  var tasks = window._sppState.tasks, sprints = window._sppState.sprints;
+  var sprint = sprints.find(function(s){ return s.id===sprintId; }) || {};
+  var SP_TYPES = ['task','user_story','bug'];
+  var sprintTasks = tasks.filter(function(t){ return t.sprintId===sprintId && (t.issueType||'task')!=='epic' && (t.issueType||'task')!=='sub_task'; });
+  var totalSp = sprintTasks.filter(function(t){ return SP_TYPES.indexOf(t.issueType||'task')!==-1&&t.storyPoints!==''&&t.storyPoints!==null&&t.storyPoints!==undefined; }).reduce(function(a,t){ return a+Number(t.storyPoints); }, 0);
+  var cap = Number(sprint.capacity)||0, overCap = cap>0&&totalSp>cap;
+  var spInfoEl = document.getElementById('spp-sp-info');
+  if (spInfoEl) spInfoEl.innerHTML = `<i class="fas fa-fire" style="color:#f59e0b"></i> <span style="color:${overCap?'#dc2626':'var(--primary)'}">${totalSp}</span> SP${cap?' / '+cap+' cap':''} ${overCap?'<span style="color:#dc2626;font-size:11px"><i class="fas fa-exclamation-triangle"></i> Vượt Capacity!</span>':''}`;
+  var sprintPanel = document.getElementById('spp-sprint-panel');
+  if (sprintPanel) sprintPanel.innerHTML = sprintTasks.length
+    ? sprintTasks.map(function(t){ return sppItemHtml(t,'sprint'); }).join('')
+    : '<div style="text-align:center;padding:32px;color:var(--text-muted);font-size:12px;border:2px dashed var(--border);border-radius:8px;margin:8px"><i class="fas fa-arrow-left" style="font-size:20px;margin-bottom:6px;display:block"></i>Kéo issue từ Backlog vào đây</div>';
+  var footer = document.getElementById('spp-footer');
+  if (footer) footer.innerHTML = sprint.status==='planning'
+    ? `<button class="btn btn-primary btn-sm" onclick="sppStartSprint('${window._sppState.projectId}','${sprintId}','${esc(sprint.name||'')}')"><i class="fas fa-play"></i> Bắt đầu Sprint</button>`
+    : sprint.status==='active' ? '<span style="font-size:12px;color:#059669;font-weight:600"><i class="fas fa-running"></i> Sprint đang chạy</span>' : '';
+}
+
+function sppItemHtml(t, panel) {
+  var sp = t.storyPoints!==''&&t.storyPoints!==null&&t.storyPoints!==undefined ? t.storyPoints : '';
+  return `<div draggable="true" data-spp-id="${t.id}" data-spp-panel="${panel}"
+    style="display:flex;align-items:center;gap:6px;padding:7px 10px;background:#fff;border:1px solid var(--border);border-radius:6px;margin-bottom:5px;cursor:grab;user-select:none"
+    ondragstart="sppDragStart(event,'${t.id}','${panel}')"
+    ondragover="sppPanelDragOver(event)">
+    <i class="fas fa-grip-vertical" style="color:var(--text-muted);font-size:10px;flex-shrink:0"></i>
+    ${issueTypeBadge(t.issueType||'task')}
+    <span style="flex:1;font-size:12px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(t.title)}">${esc(t.title)}</span>
+    ${t.assigneeName?`<span style="font-size:10px;color:var(--text-muted);flex-shrink:0;max-width:80px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(t.assigneeName)}</span>`:''}
+    <span style="flex-shrink:0">${spBadge(sp)}</span>
+  </div>`;
+}
+
+function sppDragStart(e, taskId, panel) {
+  _sppDragId = taskId; _sppDragPanel = panel;
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function sppPanelDragOver(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
+
+async function sppDropToSprint(e, projectId) {
+  e.preventDefault(); e.stopPropagation();
+  if (!_sppDragId || !window._sppState || _sppDragPanel === 'sprint') return;
+  var taskId = _sppDragId, sprintId = window._sppState.sprintId;
+  _sppDragId = null; _sppDragPanel = null;
+  var task = window._sppState.tasks.find(function(t){ return t.id===taskId; });
+  if (!task) return;
+  task.sprintId = sprintId; sppRender();
+  var res = await api('moveIssuesToSprint', { projectId, issueIds: [taskId], sprintId });
+  if (!res.success) { task.sprintId = ''; sppRender(); showToast('error','Lỗi',res.message); }
+  else { var st = STATE.tasks.find(function(t){return t.id===taskId;}); if(st) st.sprintId=sprintId; }
+}
+
+async function sppDropToBacklog(e, projectId) {
+  e.preventDefault(); e.stopPropagation();
+  if (!_sppDragId || !window._sppState || _sppDragPanel === 'backlog') return;
+  var taskId = _sppDragId, oldSprintId = window._sppState.sprintId;
+  _sppDragId = null; _sppDragPanel = null;
+  var task = window._sppState.tasks.find(function(t){ return t.id===taskId; });
+  if (!task) return;
+  task.sprintId = ''; sppRender();
+  var res = await api('moveIssuesToSprint', { projectId, issueIds: [taskId], sprintId: '' });
+  if (!res.success) { task.sprintId = oldSprintId; sppRender(); showToast('error','Lỗi',res.message); }
+  else { var st = STATE.tasks.find(function(t){return t.id===taskId;}); if(st) st.sprintId=''; }
+}
+
+function sppSwitchSprint(sprintId) {
+  if (!window._sppState) return;
+  window._sppState.sprintId = sprintId;
+  sppRenderSprint(sprintId);
+}
+
+async function sppStartSprint(projectId, sprintId, name) {
+  var sprint = window._sppState && window._sppState.sprints.find(function(s){return s.id===sprintId;}) || {};
+  closeModal();
+  window._sppState = null;
+  setTimeout(function(){ confirmStartSprint(projectId, sprintId, name); }, 80);
 }
 
 function openTaskModal(id, preProjectId) {
@@ -2912,8 +3115,10 @@ function localAPI(action, d) {
       const sprs=lsGet('sprints').filter(s=>s.projectId===d.projectId);
       return {success:true,data:sprs.map(s=>{
         const st=tasks.filter(t=>t.sprintId===s.id);
-        const totalSp=st.reduce((a,t)=>a+(Number(t.storyPoints)||0),0);
-        const completedSp=st.filter(t=>t.status==='completed').reduce((a,t)=>a+(Number(t.storyPoints)||0),0);
+        const SP_TYPES=['task','user_story','bug'];
+        const spElig=st.filter(t=>SP_TYPES.indexOf(t.issueType||'task')!==-1&&t.storyPoints!==''&&t.storyPoints!==null&&t.storyPoints!==undefined);
+        const totalSp=spElig.reduce((a,t)=>a+Number(t.storyPoints),0);
+        const completedSp=spElig.filter(t=>t.status==='completed').reduce((a,t)=>a+Number(t.storyPoints),0);
         return Object.assign({},s,{totalSp,completedSp,issueCount:st.length});
       }).sort((a,b)=>({planning:0,active:1,completed:2}[a.status]||0)-({planning:0,active:1,completed:2}[b.status]||0))};
     }
@@ -2937,7 +3142,7 @@ function localAPI(action, d) {
       if(sprs.some(s=>s.projectId===d.projectId&&s.status==='active')) return {success:false,message:'Đã có Sprint đang chạy trong dự án này'};
       const idx=sprs.findIndex(s=>s.id===d.id);if(idx===-1) return {success:false,message:'Không tìm thấy'};
       const tasks=lsGet('tasks');
-      const totalSp=tasks.filter(t=>t.sprintId===d.id).reduce((a,t)=>a+(Number(t.storyPoints)||0),0);
+      const totalSp=tasks.filter(t=>t.sprintId===d.id&&['task','user_story','bug'].indexOf(t.issueType||'task')!==-1&&t.storyPoints!==''&&t.storyPoints!==null&&t.storyPoints!==undefined).reduce((a,t)=>a+Number(t.storyPoints),0);
       Object.assign(sprs[idx],{status:'active',totalSpSnapshot:totalSp,startDate:d.startDate||sprs[idx].startDate||demoNow().split('T')[0]});
       lsSet('sprints',sprs);return {success:true,message:'Sprint đã bắt đầu!'};
     }

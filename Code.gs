@@ -557,10 +557,12 @@ function getSprints(data) {
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
   const sprints = sheetToObjects(getSheet(SHEETS.SPRINTS)).filter(function(s) { return s.projectId === data.projectId; });
   const tasks = sheetToObjects(getSheet(SHEETS.TASKS));
+  const SP_ISSUE_TYPES = ['task','user_story','bug'];
   const result = sprints.map(function(s) {
     const st = tasks.filter(function(t) { return t.sprintId === s.id; });
-    const totalSp = st.reduce(function(a, t) { return a + (Number(t.storyPoints) || 0); }, 0);
-    const completedSp = st.filter(function(t) { return t.status === 'completed'; }).reduce(function(a, t) { return a + (Number(t.storyPoints) || 0); }, 0);
+    const spEligible = st.filter(function(t) { return SP_ISSUE_TYPES.indexOf(t.issueType||'task') !== -1 && t.storyPoints !== '' && t.storyPoints !== null && t.storyPoints !== undefined; });
+    const totalSp = spEligible.reduce(function(a, t) { return a + Number(t.storyPoints); }, 0);
+    const completedSp = spEligible.filter(function(t) { return t.status === 'completed'; }).reduce(function(a, t) { return a + Number(t.storyPoints); }, 0);
     return Object.assign({}, s, { totalSp: totalSp, completedSp: completedSp, issueCount: st.length });
   });
   return { success: true, data: result.sort(function(a,b){ const ord={planning:0,active:1,completed:2}; return (ord[a.status]||0)-(ord[b.status]||0); }) };
@@ -599,7 +601,7 @@ function startSprint(data) {
   const rowIndex = findRowById(sprintsSheet, data.id);
   if (rowIndex === -1) return { success: false, message: 'Sprint không tồn tại' };
   const tasks = sheetToObjects(getSheet(SHEETS.TASKS));
-  const totalSp = tasks.filter(function(t) { return t.sprintId === data.id; }).reduce(function(a, t) { return a + (Number(t.storyPoints) || 0); }, 0);
+  const totalSp = tasks.filter(function(t) { return t.sprintId === data.id && ['task','user_story','bug'].indexOf(t.issueType||'task') !== -1 && t.storyPoints !== '' && t.storyPoints !== null && t.storyPoints !== undefined; }).reduce(function(a, t) { return a + Number(t.storyPoints); }, 0);
   updateRow(sprintsSheet, rowIndex, { status: 'active', totalSpSnapshot: totalSp, startDate: data.startDate || nowIso().split('T')[0] });
   return { success: true, message: 'Sprint đã bắt đầu!' };
 }
