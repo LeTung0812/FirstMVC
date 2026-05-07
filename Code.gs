@@ -1,11 +1,12 @@
 // ==================== PROJECT MANAGEMENT SYSTEM - BACKEND ====================
-// Google Apps Script | Version 1.0.0
+// Google Apps Script | Version 2.0.0 | Project-level RBAC
 
 const SHEETS = {
   USERS: 'Users',
   PROJECTS: 'Projects',
   TASKS: 'Tasks',
-  NOTIFICATIONS: 'Notifications'
+  NOTIFICATIONS: 'Notifications',
+  PROJECT_MEMBERS: 'ProjectMembers'
 };
 
 // ==================== ENTRY POINT ====================
@@ -30,6 +31,10 @@ function processRequest(action, data) {
       case 'createProject':         return createProject(data);
       case 'updateProject':         return updateProject(data);
       case 'deleteProject':         return deleteProject(data);
+      case 'getProjectMembers':     return getProjectMembers(data);
+      case 'addProjectMember':      return addProjectMember(data);
+      case 'updateProjectMember':   return updateProjectMember(data);
+      case 'removeProjectMember':   return removeProjectMember(data);
       case 'getTasks':              return getTasks(data);
       case 'getTaskById':           return getTaskById(data);
       case 'createTask':            return createTask(data);
@@ -54,22 +59,13 @@ function processRequest(action, data) {
 
 // ==================== HELPERS ====================
 function getSpreadsheet() {
-  // 1. Script gắn với Sheet (bound script) — dùng trực tiếp
   const active = SpreadsheetApp.getActiveSpreadsheet();
   if (active) return active;
-
-  // 2. Standalone script — tìm ID đã lưu trong Script Properties
   const props = PropertiesService.getScriptProperties();
   const savedId = props.getProperty('SPREADSHEET_ID');
   if (savedId) {
-    try {
-      return SpreadsheetApp.openById(savedId);
-    } catch (e) {
-      Logger.log('Saved spreadsheet ID invalid, creating new one...');
-    }
+    try { return SpreadsheetApp.openById(savedId); } catch (e) { Logger.log('Saved spreadsheet ID invalid, creating new one...'); }
   }
-
-  // 3. Tự động tạo Google Sheet mới và lưu ID
   const ss = SpreadsheetApp.create('PM_Database - Quản lý Dự án');
   props.setProperty('SPREADSHEET_ID', ss.getId());
   Logger.log('✅ Đã tạo Google Sheet mới: ' + ss.getUrl());
@@ -95,10 +91,11 @@ function getSheet(name) {
 
 function initSheet(name, sheet) {
   const headers = {
-    Users:         ['id','name','email','password','role','department','isActive','createdAt'],
-    Projects:      ['id','code','name','description','managerId','managerName','startDate','endDate','status','budget','createdAt','updatedAt'],
-    Tasks:         ['id','projectId','projectName','title','description','assigneeId','assigneeName','reviewerId','reviewerName','startDate','dueDate','status','priority','estimatedCost','actualCost','progress','createdAt','updatedAt','createdBy'],
-    Notifications: ['id','userId','title','message','type','isRead','relatedId','relatedType','createdAt']
+    Users:          ['id','name','email','password','role','department','isActive','createdAt'],
+    Projects:       ['id','code','name','description','managerId','managerName','startDate','endDate','status','budget','createdAt','updatedAt'],
+    Tasks:          ['id','projectId','projectName','title','description','assigneeId','assigneeName','reviewerId','reviewerName','startDate','dueDate','status','priority','estimatedCost','actualCost','progress','createdAt','updatedAt','createdBy'],
+    Notifications:  ['id','userId','title','message','type','isRead','relatedId','relatedType','createdAt'],
+    ProjectMembers: ['id','projectId','userId','userName','projectRole','addedAt','addedBy']
   };
   const h = headers[name];
   if (h) {
@@ -151,8 +148,36 @@ function refreshSession(token, user) {
   getCache().put(token, JSON.stringify(user), 28800);
 }
 
+// ==================== PERMISSION HELPERS ====================
+function getProjectRoleFrom(members, userId, projectId) {
+  const entry = members.find(function(m) { return m.projectId === projectId && m.userId === userId; });
+  return entry ? entry.projectRole : null;
+}
+
+// Can user see this project at all?
+function canAccessProject(user, projectId, members) {
+  if (user.role === 'admin') return true;
+  return getProjectRoleFrom(members, user.userId, projectId) !== null;
+}
+
+// Can user edit project info, manage members, delete tasks?
+function canManageProject(user, projectId, members) {
+  if (user.role === 'admin') return true;
+  return getProjectRoleFrom(members, user.userId, projectId) === 'owner';
+}
+
+// Can user create or edit tasks (owner or member)?
+function canContributeToProject(user, projectId, members) {
+  if (user.role === 'admin') return true;
+  const role = getProjectRoleFrom(members, user.userId, projectId);
+  return role === 'owner' || role === 'member';
+}
+
+function addMemberEntry(projectId, userId, userName, projectRole, addedBy) {
+  getSheet(SHEETS.PROJECT_MEMBERS).appendRow([generateId(), projectId, userId, userName, projectRole, nowIso(), addedBy]);
+}
+
 // ==================== TIỆN ÍCH SETUP ====================
-// Chạy hàm này để xem URL Google Sheet đang dùng
 function getSpreadsheetUrl() {
   const ss = getSpreadsheet();
   const url = ss.getUrl();
@@ -161,7 +186,6 @@ function getSpreadsheetUrl() {
   return url;
 }
 
-// Đặt lại Spreadsheet ID thủ công (nếu muốn dùng sheet có sẵn)
 function setSpreadsheetId(id) {
   PropertiesService.getScriptProperties().setProperty('SPREADSHEET_ID', id);
   Logger.log('✅ Đã lưu Spreadsheet ID: ' + id);
@@ -169,7 +193,7 @@ function setSpreadsheetId(id) {
 
 // ==================== INIT ====================
 function initializeApp() {
-  ['Users','Projects','Tasks','Notifications'].forEach(function(n) { getSheet(n); });
+  ['Users','Projects','Tasks','Notifications','ProjectMembers'].forEach(function(n) { getSheet(n); });
   const usersSheet = getSheet(SHEETS.USERS);
   if (sheetToObjects(usersSheet).length === 0) {
     const ts = nowIso();
@@ -177,6 +201,42 @@ function initializeApp() {
     usersSheet.appendRow([generateId(),'Nguyễn Văn Manager','manager@company.com',hashPassword('Manager@123'),'manager','Phòng Kỹ thuật',true,ts]);
     usersSheet.appendRow([generateId(),'Trần Thị Employee','employee@company.com',hashPassword('Employee@123'),'employee','Phòng Kỹ thuật',true,ts]);
   }
+  migrateProjectMembers();
+}
+
+// Back-fills ProjectMembers entries for pre-existing projects that have none yet.
+function migrateProjectMembers() {
+  const membersSheet = getSheet(SHEETS.PROJECT_MEMBERS);
+  const existing = sheetToObjects(membersSheet);
+  const projects = sheetToObjects(getSheet(SHEETS.PROJECTS));
+  if (!projects.length) return;
+
+  const needsMigration = projects.filter(function(p) {
+    return !existing.some(function(m) { return m.projectId === p.id; });
+  });
+  if (!needsMigration.length) return;
+
+  const tasks = sheetToObjects(getSheet(SHEETS.TASKS));
+  const users = sheetToObjects(getSheet(SHEETS.USERS));
+  const ts = nowIso();
+
+  needsMigration.forEach(function(p) {
+    const seen = new Set();
+    if (p.managerId) {
+      const mgr = users.find(function(u) { return u.id === p.managerId; });
+      membersSheet.appendRow([generateId(), p.id, p.managerId, (mgr ? mgr.name : p.managerName) || '', 'owner', ts, 'migration']);
+      seen.add(p.managerId);
+    }
+    tasks.filter(function(t) { return t.projectId === p.id; }).forEach(function(t) {
+      [t.assigneeId, t.reviewerId].forEach(function(uid) {
+        if (uid && !seen.has(uid)) {
+          seen.add(uid);
+          const u = users.find(function(u) { return u.id === uid; });
+          if (u) membersSheet.appendRow([generateId(), p.id, uid, u.name, 'member', ts, 'migration']);
+        }
+      });
+    });
+  });
 }
 
 // ==================== AUTH ====================
@@ -208,19 +268,27 @@ function validateSession(token) {
 function getProjects(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const allMembers = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
   const allTasks = sheetToObjects(getSheet(SHEETS.TASKS));
   let projects = sheetToObjects(getSheet(SHEETS.PROJECTS));
+
   if (user.role !== 'admin') {
-    const myProjIds = new Set(allTasks.filter(function(t) { return t.assigneeId === user.userId || t.reviewerId === user.userId; }).map(function(t) { return t.projectId; }));
-    projects = projects.filter(function(p) { return myProjIds.has(p.id) || p.managerId === user.userId; });
+    const myProjIds = new Set(
+      allMembers.filter(function(m) { return m.userId === user.userId; }).map(function(m) { return m.projectId; })
+    );
+    projects = projects.filter(function(p) { return myProjIds.has(p.id); });
   }
+
   const today = new Date();
   projects = projects.map(function(p) {
     const pt = allTasks.filter(function(t) { return t.projectId === p.id; });
+    const userProjectRole = user.role === 'admin' ? 'admin' : getProjectRoleFrom(allMembers, user.userId, p.id);
     return Object.assign({}, p, {
       taskCount: pt.length,
       completedTasks: pt.filter(function(t) { return t.status === 'completed'; }).length,
-      overdueTasks: pt.filter(function(t) { return t.status !== 'completed' && t.dueDate && new Date(t.dueDate) < today; }).length
+      overdueTasks: pt.filter(function(t) { return t.status !== 'completed' && t.dueDate && new Date(t.dueDate) < today; }).length,
+      userProjectRole: userProjectRole,
+      memberCount: allMembers.filter(function(m) { return m.projectId === p.id; }).length
     });
   });
   return { success: true, data: projects };
@@ -229,6 +297,8 @@ function getProjects(data) {
 function getProjectById(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canAccessProject(user, data.id, members)) return { success: false, message: 'Bạn không có quyền truy cập dự án này' };
   const project = sheetToObjects(getSheet(SHEETS.PROJECTS)).find(function(p) { return p.id === data.id; });
   if (!project) return { success: false, message: 'Dự án không tồn tại' };
   return { success: true, data: project };
@@ -241,15 +311,27 @@ function createProject(data) {
   const sheet = getSheet(SHEETS.PROJECTS);
   if (data.code && sheetToObjects(sheet).find(function(p) { return p.code === data.code; })) return { success: false, message: 'Mã dự án đã tồn tại' };
   const id = generateId(); const ts = nowIso();
-  sheet.appendRow([id, data.code||'', data.name, data.description||'', data.managerId||user.userId, data.managerName||user.name, data.startDate||'', data.endDate||'', data.status||'active', Number(data.budget)||0, ts, ts]);
-  if (data.managerId && data.managerId !== user.userId) addNotification(data.managerId, 'Dự án mới được giao', 'Bạn quản lý dự án: ' + data.name, 'project', id, 'project');
+  const managerId = data.managerId || user.userId;
+  const managerName = data.managerName || user.name;
+  sheet.appendRow([id, data.code||'', data.name, data.description||'', managerId, managerName, data.startDate||'', data.endDate||'', data.status||'active', Number(data.budget)||0, ts, ts]);
+
+  // Auto-add creator as owner
+  addMemberEntry(id, user.userId, user.name, 'owner', user.userId);
+  // Also add assigned manager as owner if different from creator
+  if (managerId !== user.userId) {
+    const users = sheetToObjects(getSheet(SHEETS.USERS));
+    const mgr = users.find(function(u) { return u.id === managerId; });
+    if (mgr) addMemberEntry(id, managerId, managerName, 'owner', user.userId);
+    addNotification(managerId, 'Dự án mới được giao', 'Bạn quản lý dự án: ' + data.name, 'project', id, 'project');
+  }
   return { success: true, id: id, message: 'Tạo dự án thành công' };
 }
 
 function updateProject(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
-  if (user.role === 'employee') return { success: false, message: 'Bạn không có quyền chỉnh sửa dự án' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.id, members)) return { success: false, message: 'Bạn không có quyền chỉnh sửa dự án này' };
   const sheet = getSheet(SHEETS.PROJECTS);
   const rowIndex = findRowById(sheet, data.id);
   if (rowIndex === -1) return { success: false, message: 'Dự án không tồn tại' };
@@ -265,9 +347,85 @@ function deleteProject(data) {
   const rowIndex = findRowById(sheet, data.id);
   if (rowIndex === -1) return { success: false, message: 'Dự án không tồn tại' };
   sheet.deleteRow(rowIndex);
+  // Cascade: delete all tasks
   const tasksSheet = getSheet(SHEETS.TASKS);
-  sheetToObjects(tasksSheet).filter(function(t) { return t.projectId === data.id; }).reverse().forEach(function(t) { const r = findRowById(tasksSheet, t.id); if (r !== -1) tasksSheet.deleteRow(r); });
+  sheetToObjects(tasksSheet).filter(function(t) { return t.projectId === data.id; }).reverse().forEach(function(t) {
+    const r = findRowById(tasksSheet, t.id); if (r !== -1) tasksSheet.deleteRow(r);
+  });
+  // Cascade: delete all member entries
+  const membersSheet = getSheet(SHEETS.PROJECT_MEMBERS);
+  sheetToObjects(membersSheet).filter(function(m) { return m.projectId === data.id; }).reverse().forEach(function(m) {
+    const r = findRowById(membersSheet, m.id); if (r !== -1) membersSheet.deleteRow(r);
+  });
   return { success: true, message: 'Xóa dự án thành công' };
+}
+
+// ==================== PROJECT MEMBERS ====================
+function getProjectMembers(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canAccessProject(user, data.projectId, members)) return { success: false, message: 'Không có quyền truy cập dự án' };
+  const projMembers = members.filter(function(m) { return m.projectId === data.projectId; });
+  const users = sheetToObjects(getSheet(SHEETS.USERS));
+  const enriched = projMembers.map(function(m) {
+    const u = users.find(function(u) { return u.id === m.userId; }) || {};
+    return { id: m.id, projectId: m.projectId, userId: m.userId, userName: m.userName || u.name || '', projectRole: m.projectRole, addedAt: m.addedAt, systemRole: u.role || '', department: u.department || '', email: u.email || '' };
+  });
+  return { success: true, data: enriched };
+}
+
+function addProjectMember(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền quản lý thành viên dự án này' };
+  if (members.find(function(m) { return m.projectId === data.projectId && m.userId === data.userId; })) {
+    return { success: false, message: 'Người dùng đã là thành viên của dự án' };
+  }
+  const users = sheetToObjects(getSheet(SHEETS.USERS));
+  const targetUser = users.find(function(u) { return u.id === data.userId; });
+  if (!targetUser) return { success: false, message: 'Người dùng không tồn tại' };
+  addMemberEntry(data.projectId, data.userId, targetUser.name, data.projectRole || 'member', user.userId);
+  const project = sheetToObjects(getSheet(SHEETS.PROJECTS)).find(function(p) { return p.id === data.projectId; });
+  const roleLabel = { owner: 'Quản lý dự án', member: 'Thành viên', viewer: 'Người xem' }[data.projectRole] || 'Thành viên';
+  addNotification(data.userId, 'Được thêm vào dự án', 'Bạn được thêm vào dự án "' + (project ? project.name : '') + '" với vai trò: ' + roleLabel, 'project', data.projectId, 'project');
+  return { success: true, message: 'Thêm thành viên thành công' };
+}
+
+function updateProjectMember(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền quản lý thành viên dự án này' };
+  const entry = members.find(function(m) { return m.projectId === data.projectId && m.userId === data.userId; });
+  if (!entry) return { success: false, message: 'Thành viên không tồn tại trong dự án' };
+  if (entry.projectRole === 'owner' && data.projectRole !== 'owner') {
+    const owners = members.filter(function(m) { return m.projectId === data.projectId && m.projectRole === 'owner'; });
+    if (owners.length <= 1) return { success: false, message: 'Dự án phải có ít nhất một Quản lý dự án' };
+  }
+  const sheet = getSheet(SHEETS.PROJECT_MEMBERS);
+  const rowIndex = findRowById(sheet, entry.id);
+  if (rowIndex === -1) return { success: false, message: 'Lỗi tìm bản ghi thành viên' };
+  updateRow(sheet, rowIndex, { projectRole: data.projectRole });
+  return { success: true, message: 'Cập nhật quyền thành công' };
+}
+
+function removeProjectMember(data) {
+  const user = getSessionUser(data.token);
+  if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canManageProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền quản lý thành viên dự án này' };
+  const entry = members.find(function(m) { return m.projectId === data.projectId && m.userId === data.userId; });
+  if (!entry) return { success: false, message: 'Thành viên không tồn tại trong dự án' };
+  if (entry.projectRole === 'owner') {
+    const owners = members.filter(function(m) { return m.projectId === data.projectId && m.projectRole === 'owner'; });
+    if (owners.length <= 1) return { success: false, message: 'Không thể xóa Quản lý dự án duy nhất' };
+  }
+  const sheet = getSheet(SHEETS.PROJECT_MEMBERS);
+  const rowIndex = findRowById(sheet, entry.id);
+  if (rowIndex !== -1) sheet.deleteRow(rowIndex);
+  return { success: true, message: 'Đã xóa thành viên khỏi dự án' };
 }
 
 // ==================== TASKS ====================
@@ -275,8 +433,12 @@ function getTasks(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
   let tasks = sheetToObjects(getSheet(SHEETS.TASKS));
+  if (user.role !== 'admin') {
+    const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+    const myProjIds = new Set(members.filter(function(m) { return m.userId === user.userId; }).map(function(m) { return m.projectId; }));
+    tasks = tasks.filter(function(t) { return myProjIds.has(t.projectId); });
+  }
   if (data.projectId) tasks = tasks.filter(function(t) { return t.projectId === data.projectId; });
-  if (user.role === 'employee') tasks = tasks.filter(function(t) { return t.assigneeId === user.userId || t.reviewerId === user.userId; });
   const today = new Date();
   return { success: true, data: tasks.map(function(t) { return Object.assign({}, t, { isOverdue: t.status !== 'completed' && t.dueDate && new Date(t.dueDate) < today }); }) };
 }
@@ -292,6 +454,8 @@ function getTaskById(data) {
 function createTask(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
+  const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+  if (!canContributeToProject(user, data.projectId, members)) return { success: false, message: 'Bạn không có quyền tạo công việc trong dự án này (cần vai trò Thành viên trở lên)' };
   const sheet = getSheet(SHEETS.TASKS);
   const id = generateId(); const ts = nowIso();
   sheet.appendRow([id, data.projectId, data.projectName, data.title, data.description||'', data.assigneeId||'', data.assigneeName||'', data.reviewerId||'', data.reviewerName||'', data.startDate||'', data.dueDate||'', data.status||'todo', data.priority||'medium', Number(data.estimatedCost)||0, Number(data.actualCost)||0, Number(data.progress)||0, ts, ts, user.userId]);
@@ -307,7 +471,15 @@ function updateTask(data) {
   const rowIndex = findRowById(sheet, data.id);
   if (rowIndex === -1) return { success: false, message: 'Công việc không tồn tại' };
   const oldTask = sheetToObjects(sheet).find(function(t) { return t.id === data.id; });
-  if (user.role === 'employee' && oldTask && oldTask.assigneeId !== user.userId && oldTask.reviewerId !== user.userId) return { success: false, message: 'Bạn không có quyền chỉnh sửa công việc này' };
+  if (user.role !== 'admin') {
+    const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+    const projRole = getProjectRoleFrom(members, user.userId, oldTask.projectId);
+    if (!projRole) return { success: false, message: 'Bạn không có quyền truy cập dự án này' };
+    if (projRole === 'viewer') return { success: false, message: 'Bạn chỉ có quyền xem dự án này' };
+    if (projRole === 'member' && oldTask.assigneeId !== user.userId && oldTask.reviewerId !== user.userId) {
+      return { success: false, message: 'Thành viên chỉ được chỉnh sửa công việc được phân công cho mình' };
+    }
+  }
   updateRow(sheet, rowIndex, { projectId: data.projectId, projectName: data.projectName, title: data.title, description: data.description, assigneeId: data.assigneeId, assigneeName: data.assigneeName, reviewerId: data.reviewerId, reviewerName: data.reviewerName, startDate: data.startDate, dueDate: data.dueDate, status: data.status, priority: data.priority, estimatedCost: Number(data.estimatedCost)||0, actualCost: Number(data.actualCost)||0, progress: Number(data.progress)||0, updatedAt: nowIso() });
   if (data.status === 'review' && oldTask && oldTask.status !== 'review' && oldTask.reviewerId) addNotification(oldTask.reviewerId, 'Công việc cần kiểm duyệt', '"' + (data.title||oldTask.title) + '" đã hoàn thành và cần kiểm duyệt', 'task', data.id, 'task');
   return { success: true, message: 'Cập nhật công việc thành công' };
@@ -316,10 +488,14 @@ function updateTask(data) {
 function deleteTask(data) {
   const user = getSessionUser(data.token);
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
-  if (user.role === 'employee') return { success: false, message: 'Bạn không có quyền xóa công việc' };
   const sheet = getSheet(SHEETS.TASKS);
   const rowIndex = findRowById(sheet, data.id);
   if (rowIndex === -1) return { success: false, message: 'Công việc không tồn tại' };
+  if (user.role !== 'admin') {
+    const task = sheetToObjects(sheet).find(function(t) { return t.id === data.id; });
+    const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+    if (!canManageProject(user, task.projectId, members)) return { success: false, message: 'Chỉ Quản lý dự án hoặc Admin mới có thể xóa công việc' };
+  }
   sheet.deleteRow(rowIndex);
   return { success: true, message: 'Xóa công việc thành công' };
 }
@@ -365,13 +541,11 @@ function getDashboardData(data) {
   if (!user) return { success: false, message: 'Phiên đăng nhập hết hạn' };
   let projects = sheetToObjects(getSheet(SHEETS.PROJECTS));
   let tasks = sheetToObjects(getSheet(SHEETS.TASKS));
-  if (user.role === 'employee') {
-    const myProjIds = new Set(tasks.filter(function(t) { return t.assigneeId === user.userId || t.reviewerId === user.userId; }).map(function(t) { return t.projectId; }));
-    projects = projects.filter(function(p) { return myProjIds.has(p.id) || p.managerId === user.userId; });
-    tasks = tasks.filter(function(t) { return t.assigneeId === user.userId || t.reviewerId === user.userId; });
-  } else if (user.role === 'manager') {
-    const myProjIds = new Set(tasks.filter(function(t) { return t.assigneeId === user.userId || t.reviewerId === user.userId; }).map(function(t) { return t.projectId; }));
-    projects = projects.filter(function(p) { return myProjIds.has(p.id) || p.managerId === user.userId; });
+  if (user.role !== 'admin') {
+    const members = sheetToObjects(getSheet(SHEETS.PROJECT_MEMBERS));
+    const myProjIds = new Set(members.filter(function(m) { return m.userId === user.userId; }).map(function(m) { return m.projectId; }));
+    projects = projects.filter(function(p) { return myProjIds.has(p.id); });
+    tasks = tasks.filter(function(t) { return myProjIds.has(t.projectId); });
   }
   const today = new Date();
   const pStats = { total: projects.length, active: projects.filter(function(p){return p.status==='active';}).length, completed: projects.filter(function(p){return p.status==='completed';}).length, paused: projects.filter(function(p){return p.status==='paused';}).length };

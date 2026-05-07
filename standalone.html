@@ -544,8 +544,14 @@ const STATE = {
   unreadCount: 0,
   currentPage: 'dashboard',
   projectView: 'grid',
-  charts: {}
+  charts: {},
+  myProjectRoles: {}   // projectId → userProjectRole for the logged-in user
 };
+
+function syncProjectRoles(projects) {
+  STATE.myProjectRoles = {};
+  (projects || []).forEach(function(p) { STATE.myProjectRoles[p.id] = p.userProjectRole; });
+}
 
 // ============================================================
 // API  (GAS or Demo mode)
@@ -823,6 +829,7 @@ async function renderProjects() {
     const res = await api('getProjects', {});
     if (!res.success) { showToast('error', 'Lỗi', res.message); return; }
     STATE.projects = res.data;
+    syncProjectRoles(res.data);
     renderProjectsUI();
   } catch(err) {
     showToast('error', 'Lỗi', 'Không thể tải dự án');
@@ -887,7 +894,7 @@ function filterProjects() {
     container.innerHTML = `<div class="projects-grid">${filtered.map(projectCard).join('')}</div>`;
   } else {
     container.innerHTML = `<div class="card"><div class="table-wrap"><table>
-      <thead><tr><th>Mã</th><th>Tên dự án</th><th>Quản lý</th><th>Bắt đầu</th><th>Kết thúc</th><th>CV</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
+      <thead><tr><th>Mã</th><th>Tên dự án</th><th>Quản lý</th><th>Bắt đầu</th><th>Kết thúc</th><th>CV</th><th>Trạng thái</th><th>Quyền DA</th><th>Thao tác</th></tr></thead>
       <tbody>${filtered.map(projectRow).join('')}</tbody>
     </table></div></div>`;
   }
@@ -901,9 +908,12 @@ function projectCard(p) {
         <div class="proj-name">${esc(p.name)}</div>
         <div class="proj-code"># ${esc(p.code||'')}</div>
       </div>
-      ${projectStatusBadge(p.status)}
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px">
+        ${projectStatusBadge(p.status)}
+        ${memberRoleBadge(p.userProjectRole)}
+      </div>
     </div>
-    <div class="proj-manager"><i class="fas fa-user"></i>${esc(p.managerName||'Chưa phân công')}</div>
+    <div class="proj-manager"><i class="fas fa-user"></i>${esc(p.managerName||'Chưa phân công')} &nbsp;<i class="fas fa-users" style="font-size:10px"></i> ${p.memberCount||0}</div>
     <div class="progress-bar"><div class="progress-fill ${pct===100?'success':pct>60?'':'warning'}" style="width:${pct}%"></div></div>
     <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text-muted)">
       <span>${pct}% hoàn thành</span><span>${p.overdueTasks>0?'<span style="color:var(--danger)">'+p.overdueTasks+' quá hạn</span>':p.taskCount+' công việc'}</span>
@@ -916,7 +926,7 @@ function projectCard(p) {
 }
 
 function projectRow(p) {
-  const canEdit = STATE.user.role !== 'employee';
+  const canEdit = STATE.user.role === 'admin' || p.userProjectRole === 'owner';
   const canDelete = STATE.user.role === 'admin';
   return `<tr>
     <td><span style="font-weight:700;color:var(--primary)">${esc(p.code||'—')}</span></td>
@@ -929,6 +939,7 @@ function projectRow(p) {
     <td>${fmtDate(p.endDate)||'—'}</td>
     <td>${p.overdueTasks>0?`<span style="color:var(--danger);font-weight:700">${p.overdueTasks} quá hạn</span>`:p.taskCount}</td>
     <td>${projectStatusBadge(p.status)}</td>
+    <td>${memberRoleBadge(p.userProjectRole)}</td>
     <td><div class="td-actions">
       <button class="btn btn-sm btn-outline" onclick="openProjectDetail('${p.id}');event.stopPropagation()"><i class="fas fa-eye"></i></button>
       ${canEdit?`<button class="btn btn-sm btn-outline" onclick="openProjectModal('${p.id}');event.stopPropagation()"><i class="fas fa-edit"></i></button>`:''}
@@ -1029,23 +1040,29 @@ async function saveProject(id) {
 
 async function openProjectDetail(id) {
   const proj = STATE.projects.find(function(p){return p.id===id;}) || {};
-  const tasksRes = await api('getTasks', { projectId: id });
+  const [tasksRes, membersRes] = await Promise.all([
+    api('getTasks', { projectId: id }),
+    api('getProjectMembers', { projectId: id })
+  ]);
   const tasks = tasksRes.success ? tasksRes.data : [];
-  const today = new Date();
+  const members = membersRes.success ? membersRes.data : [];
   const pct = tasks.length ? Math.round(tasks.filter(function(t){return t.status==='completed';}).length/tasks.length*100) : 0;
-  const canEdit = STATE.user.role !== 'employee';
+  const userProjRole = proj.userProjectRole || (STATE.user.role === 'admin' ? 'admin' : '');
+  const canEdit = STATE.user.role === 'admin' || userProjRole === 'owner';
   const canDelete = STATE.user.role === 'admin';
 
   openModal(proj.name || 'Chi tiết dự án', `
-    <div style="display:flex;align-items:center;gap:10px;margin-bottom:16px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px;flex-wrap:wrap">
       ${projectStatusBadge(proj.status)}
       <span style="font-size:13px;color:var(--text-muted)"># ${esc(proj.code||'')}</span>
+      ${memberRoleBadge(userProjRole)}
     </div>
     ${proj.description ? `<p style="color:var(--text-muted);margin-bottom:16px;font-size:13px">${esc(proj.description)}</p>` : ''}
     <div class="task-meta">
       <div class="task-meta-item"><i class="fas fa-user"></i><span>Quản lý: <strong>${esc(proj.managerName||'Chưa phân công')}</strong></span></div>
       <div class="task-meta-item"><i class="fas fa-calendar-alt"></i><span>${fmtDate(proj.startDate)||'?'} → ${fmtDate(proj.endDate)||'?'}</span></div>
       <div class="task-meta-item"><i class="fas fa-wallet"></i><span>NS: <strong>${formatMoney(proj.budget||0)}</strong></span></div>
+      <div class="task-meta-item"><i class="fas fa-users"></i><span>${members.length} thành viên</span></div>
     </div>
     <div style="margin-bottom:16px">
       <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px"><span>Tiến độ</span><span style="font-weight:700;color:var(--primary)">${pct}%</span></div>
@@ -1054,9 +1071,10 @@ async function openProjectDetail(id) {
     <div class="tabs">
       <button class="tab-btn active" onclick="switchDetailTab('tasks','${id}',this)">Công việc (${tasks.length})</button>
       <button class="tab-btn" onclick="switchDetailTab('cost','${id}',this)">Chi phí</button>
+      <button class="tab-btn" onclick="switchDetailTab('members','${id}',this)">Thành viên (${members.length})</button>
     </div>
     <div id="detail-tab-content">
-      ${renderProjectTasksTab(tasks, id)}
+      ${renderProjectTasksTab(tasks, id, userProjRole)}
     </div>
   `, [
     { text: 'Đóng', cls: 'btn-outline', action: 'closeModal()' },
@@ -1065,8 +1083,9 @@ async function openProjectDetail(id) {
   ].filter(Boolean), 'modal-lg');
 }
 
-function renderProjectTasksTab(tasks, projectId) {
-  const canAdd = STATE.user.role !== 'employee';
+function renderProjectTasksTab(tasks, projectId, userProjRole) {
+  const r = userProjRole || STATE.myProjectRoles[projectId] || (STATE.user.role === 'admin' ? 'admin' : '');
+  const canAdd = STATE.user.role === 'admin' || r === 'owner' || r === 'member';
   if (!tasks.length) return `<div class="empty-state"><i class="fas fa-tasks"></i><h3>Chưa có công việc</h3>${canAdd?`<button class="btn btn-primary" onclick="closeModal();openTaskModal(null,'${projectId}')"><i class="fas fa-plus"></i> Thêm công việc</button>`:'</div>'}</div>`;
   const today = new Date();
   return (canAdd ? `<div style="margin-bottom:12px"><button class="btn btn-sm btn-primary" onclick="closeModal();openTaskModal(null,'${projectId}')"><i class="fas fa-plus"></i> Thêm công việc</button></div>` : '') +
@@ -1101,9 +1120,18 @@ function renderProjectCostTab(tasks) {
 async function switchDetailTab(tab, projectId, btn) {
   document.querySelectorAll('.tab-btn').forEach(function(b){b.classList.remove('active');});
   btn.classList.add('active');
-  const tasksRes = await api('getTasks', { projectId });
-  const tasks = tasksRes.success ? tasksRes.data : [];
-  document.getElementById('detail-tab-content').innerHTML = tab === 'tasks' ? renderProjectTasksTab(tasks, projectId) : renderProjectCostTab(tasks);
+  const content = document.getElementById('detail-tab-content');
+  const proj = STATE.projects.find(function(p){return p.id===projectId;}) || {};
+  const userProjRole = proj.userProjectRole || (STATE.user.role === 'admin' ? 'admin' : '');
+  if (tab === 'members') {
+    const membersRes = await api('getProjectMembers', { projectId });
+    const members = membersRes.success ? membersRes.data : [];
+    content.innerHTML = renderProjectMembersTab(members, projectId, userProjRole);
+  } else {
+    const tasksRes = await api('getTasks', { projectId });
+    const tasks = tasksRes.success ? tasksRes.data : [];
+    content.innerHTML = tab === 'tasks' ? renderProjectTasksTab(tasks, projectId, userProjRole) : renderProjectCostTab(tasks);
+  }
 }
 
 function confirmDeleteProject(id, name) {
@@ -1134,6 +1162,164 @@ async function deleteProject(id) {
 }
 
 // ============================================================
+// PROJECT MEMBERS
+// ============================================================
+function memberRoleBadge(role) {
+  const map = {
+    owner: { label: 'Quản lý DA', bg: '#ede9fe', color: '#7c3aed' },
+    member: { label: 'Thành viên', bg: '#dbeafe', color: '#1d4ed8' },
+    viewer: { label: 'Người xem', bg: '#f3f4f6', color: '#6b7280' },
+    admin:  { label: 'Admin',     bg: '#fee2e2', color: '#dc2626' }
+  };
+  if (!role) return '';
+  const s = map[role] || map.viewer;
+  return `<span style="background:${s.bg};color:${s.color};padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600;white-space:nowrap">${s.label}</span>`;
+}
+
+function renderProjectMembersTab(members, projectId, userProjRole) {
+  const canManage = STATE.user.role === 'admin' || userProjRole === 'owner';
+  const ownerCount = members.filter(function(m){return m.projectRole==='owner';}).length;
+  const rows = members.map(function(m) {
+    const isMe = m.userId === STATE.user.userId;
+    const isLastOwner = m.projectRole === 'owner' && ownerCount <= 1;
+    const roleSelect = canManage && !isLastOwner
+      ? `<select class="form-control" style="padding:3px 8px;height:auto;font-size:12px" onchange="changeProjMemberRole('${projectId}','${m.userId}',this.value)">
+           <option value="owner" ${m.projectRole==='owner'?'selected':''}>Quản lý DA</option>
+           <option value="member" ${m.projectRole==='member'?'selected':''}>Thành viên</option>
+           <option value="viewer" ${m.projectRole==='viewer'?'selected':''}>Người xem</option>
+         </select>`
+      : memberRoleBadge(m.projectRole);
+    const removeBtn = canManage && !isLastOwner && !isMe
+      ? `<button class="btn btn-sm btn-danger" onclick="removeProjMember('${projectId}','${m.userId}','${esc(m.userName)}')"><i class="fas fa-user-minus"></i></button>`
+      : '<span style="color:var(--text-muted);font-size:11px">—</span>';
+    return `<tr>
+      <td><div style="display:flex;align-items:center;gap:8px">
+        <div class="avatar avatar-sm">${(m.userName||'U')[0].toUpperCase()}</div>
+        <div><div style="font-weight:600">${esc(m.userName)}${isMe?` <span style="font-size:10px;color:var(--primary);font-weight:400">(Bạn)</span>`:''}</div>
+        <div style="font-size:11px;color:var(--text-muted)">${esc(m.email||'')}</div></div>
+      </div></td>
+      <td style="font-size:12px">${esc(m.department||'—')}</td>
+      <td>${roleBadge(m.systemRole)}</td>
+      <td>${roleSelect}</td>
+      ${canManage ? `<td>${removeBtn}</td>` : ''}
+    </tr>`;
+  }).join('');
+
+  return `
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <span style="font-size:13px;color:var(--text-muted)">${members.length} thành viên</span>
+      ${canManage ? `<button class="btn btn-sm btn-primary" onclick="openAddMemberModal('${projectId}')"><i class="fas fa-user-plus"></i> Thêm thành viên</button>` : ''}
+    </div>
+    ${!members.length
+      ? `<div class="empty-state"><i class="fas fa-users"></i><h3>Chưa có thành viên</h3>${canManage?`<button class="btn btn-primary btn-sm" onclick="openAddMemberModal('${projectId}')">Thêm ngay</button>`:''}</div>`
+      : `<div class="table-wrap"><table>
+          <thead><tr><th>Thành viên</th><th>Phòng ban</th><th>Vai trò HT</th><th>Quyền dự án</th>${canManage?'<th>Thao tác</th>':''}</tr></thead>
+          <tbody>${rows}</tbody>
+         </table></div>`
+    }
+    <div style="margin-top:12px;padding:10px 12px;background:var(--bg);border-radius:6px;font-size:12px;color:var(--text-muted)">
+      <strong style="color:var(--text)">Quản lý DA:</strong> Sửa dự án, quản lý thành viên, xóa công việc &nbsp;·&nbsp;
+      <strong style="color:var(--text)">Thành viên:</strong> Tạo &amp; sửa công việc được giao &nbsp;·&nbsp;
+      <strong style="color:var(--text)">Người xem:</strong> Chỉ xem
+    </div>`;
+}
+
+async function openAddMemberModal(projectId) {
+  const proj = STATE.projects.find(function(p){return p.id===projectId;}) || {};
+  const membersRes = await api('getProjectMembers', { projectId });
+  const existingIds = new Set((membersRes.success ? membersRes.data : []).map(function(m){return m.userId;}));
+  const available = STATE.users.filter(function(u){return u.isActive && !existingIds.has(u.id);});
+  const roleMap = { admin: 'Admin', manager: 'Quản lý', employee: 'Nhân viên' };
+  openModal('Thêm thành viên', `
+    <p style="margin-bottom:16px;color:var(--text-muted);font-size:13px">Dự án: <strong>${esc(proj.name||'')}</strong></p>
+    <div class="form-group">
+      <label>Người dùng <span style="color:var(--danger)">*</span></label>
+      <select class="form-control" id="f-member-user">
+        <option value="">-- Chọn người dùng --</option>
+        ${available.map(function(u){return`<option value="${u.id}">${esc(u.name)} · ${roleMap[u.role]||u.role}${u.department?' · '+esc(u.department):''}</option>`;}).join('')}
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Quyền trong dự án</label>
+      <select class="form-control" id="f-member-role">
+        <option value="owner">Quản lý dự án — Sửa dự án, quản lý thành viên, xóa công việc</option>
+        <option value="member" selected>Thành viên — Tạo &amp; sửa công việc được giao</option>
+        <option value="viewer">Người xem — Chỉ xem dự án và công việc</option>
+      </select>
+    </div>
+  `, [
+    { text: 'Hủy', cls: 'btn-outline', action: `openProjectDetail('${projectId}')` },
+    { text: 'Thêm vào dự án', cls: 'btn-primary', action: `saveAddMember('${projectId}')` }
+  ]);
+}
+
+async function saveAddMember(projectId) {
+  const userId = document.getElementById('f-member-user').value;
+  const role = document.getElementById('f-member-role').value;
+  if (!userId) { showToast('warning','Lỗi','Vui lòng chọn người dùng'); return; }
+  try {
+    setModalLoading(true);
+    const res = await api('addProjectMember', { projectId, userId, projectRole: role });
+    if (res.success) {
+      showToast('success','Thành công', res.message);
+      await openProjectDetail(projectId);
+    } else {
+      showToast('error','Lỗi', res.message);
+      setModalLoading(false);
+    }
+  } catch(err) {
+    showToast('error','Lỗi','Không thể thêm thành viên');
+    setModalLoading(false);
+  }
+}
+
+async function changeProjMemberRole(projectId, userId, newRole) {
+  try {
+    const res = await api('updateProjectMember', { projectId, userId, projectRole: newRole });
+    if (res.success) {
+      showToast('success','','Đã cập nhật quyền');
+    } else {
+      showToast('error','Lỗi', res.message);
+      // Re-render to reset the select value
+      const membersRes = await api('getProjectMembers', { projectId });
+      const proj = STATE.projects.find(function(p){return p.id===projectId;}) || {};
+      const userProjRole = proj.userProjectRole || (STATE.user.role === 'admin' ? 'admin' : '');
+      const el = document.getElementById('detail-tab-content');
+      if (el) el.innerHTML = renderProjectMembersTab(membersRes.success ? membersRes.data : [], projectId, userProjRole);
+    }
+  } catch(err) {
+    showToast('error','Lỗi','Không thể cập nhật quyền');
+  }
+}
+
+function removeProjMember(projectId, userId, name) {
+  openModal('Xác nhận xóa thành viên', `
+    <div class="confirm-icon"><i class="fas fa-user-minus" style="color:var(--danger)"></i></div>
+    <div class="confirm-text">Xóa <strong>"${esc(name)}"</strong> khỏi dự án?<br><span style="color:var(--danger);font-size:12px">Người này sẽ mất quyền truy cập dự án và công việc liên quan.</span></div>
+  `, [
+    { text: 'Hủy', cls: 'btn-outline', action: `openProjectDetail('${projectId}')` },
+    { text: 'Xóa khỏi dự án', cls: 'btn-danger', action: `confirmRemoveProjMember('${projectId}','${userId}')` }
+  ]);
+}
+
+async function confirmRemoveProjMember(projectId, userId) {
+  try {
+    setModalLoading(true);
+    const res = await api('removeProjectMember', { projectId, userId });
+    if (res.success) {
+      showToast('success','Đã xóa', res.message);
+      await openProjectDetail(projectId);
+    } else {
+      showToast('error','Lỗi', res.message);
+      setModalLoading(false);
+    }
+  } catch(err) {
+    showToast('error','Lỗi','Không thể xóa thành viên');
+    setModalLoading(false);
+  }
+}
+
+// ============================================================
 // TASKS
 // ============================================================
 async function renderTasks() {
@@ -1142,7 +1328,7 @@ async function renderTasks() {
   try {
     const [tasksRes, projRes] = await Promise.all([api('getTasks', {}), api('getProjects', {})]);
     if (tasksRes.success) STATE.tasks = tasksRes.data;
-    if (projRes.success) STATE.projects = projRes.data;
+    if (projRes.success) { STATE.projects = projRes.data; syncProjectRoles(projRes.data); }
     renderTasksUI();
   } catch(err) {
     showToast('error','Lỗi','Không thể tải công việc');
@@ -1150,7 +1336,7 @@ async function renderTasks() {
 }
 
 function renderTasksUI() {
-  const canCreate = true;
+  const canCreate = STATE.user.role === 'admin' || Object.values(STATE.myProjectRoles).some(function(r){return r==='owner'||r==='member';});
   const content = document.getElementById('page-content');
   content.innerHTML = `
     <div class="card" style="margin-bottom:20px">
@@ -1177,7 +1363,7 @@ function renderTasksUI() {
             <option value="">Tất cả dự án</option>
             ${STATE.projects.map(function(p){return`<option value="${p.id}">${esc(p.name)}</option>`;}).join('')}
           </select>
-          <button class="btn btn-primary" onclick="openTaskModal()"><i class="fas fa-plus"></i> Tạo công việc</button>
+          ${canCreate ? `<button class="btn btn-primary" onclick="openTaskModal()"><i class="fas fa-plus"></i> Tạo công việc</button>` : ''}
         </div>
       </div>
     </div>
@@ -1205,8 +1391,16 @@ function filterTasks() {
     container.innerHTML = '<div class="empty-state"><i class="fas fa-tasks"></i><h3>Không có công việc nào</h3><p>Tạo công việc đầu tiên</p></div>';
     return;
   }
-  const canEdit = function(t) { return STATE.user.role !== 'employee' || t.assigneeId === STATE.user.userId || t.reviewerId === STATE.user.userId; };
-  const canDelete = STATE.user.role !== 'employee';
+  const canEdit = function(t) {
+    if (STATE.user.role === 'admin') return true;
+    const pr = STATE.myProjectRoles[t.projectId];
+    if (pr === 'owner') return true;
+    if (pr === 'member') return t.assigneeId === STATE.user.userId || t.reviewerId === STATE.user.userId;
+    return false;
+  };
+  const canDelete = function(t) {
+    return STATE.user.role === 'admin' || STATE.myProjectRoles[t.projectId] === 'owner';
+  };
   container.innerHTML = `<div class="card"><div class="table-wrap"><table>
     <thead><tr><th>Công việc</th><th>Dự án</th><th>Thực hiện</th><th>Bắt đầu</th><th>Hạn</th><th>Ưu tiên</th><th>Tiến độ</th><th>Trạng thái</th><th>Thao tác</th></tr></thead>
     <tbody>${filtered.map(function(t){return`<tr>
@@ -1223,7 +1417,7 @@ function filterTasks() {
       <td>${taskStatusBadge(t.isOverdue?'overdue':t.status)}</td>
       <td><div class="td-actions">
         ${canEdit(t)?`<button class="btn btn-sm btn-outline" onclick="openTaskModal('${t.id}')"><i class="fas fa-edit"></i></button>`:''}
-        ${canDelete?`<button class="btn btn-sm btn-danger" onclick="confirmDeleteTask('${t.id}','${esc(t.title)}')"><i class="fas fa-trash"></i></button>`:''}
+        ${canDelete(t)?`<button class="btn btn-sm btn-danger" onclick="confirmDeleteTask('${t.id}','${esc(t.title)}')"><i class="fas fa-trash"></i></button>`:''}
       </div></td>
     </tr>`;}).join('')}
     </tbody></table></div></div>`;
@@ -1929,8 +2123,7 @@ function localAPI(action, d) {
     case 'getDashboardData': {
       if(!u) return {success:false,message:'Hết phiên'};
       let projs=lsGet('projects'), tasks=lsGet('tasks');
-      if(u.role==='employee'){const pids=new Set(tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId).map(t=>t.projectId));projs=projs.filter(p=>pids.has(p.id)||p.managerId===u.userId);tasks=tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId);}
-      else if(u.role==='manager'){const pids=new Set(tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId).map(t=>t.projectId));projs=projs.filter(p=>pids.has(p.id)||p.managerId===u.userId);}
+      if(u.role!=='admin'){const mems=lsGet('project_members');const pids=new Set(mems.filter(m=>m.userId===u.userId).map(m=>m.projectId));projs=projs.filter(p=>pids.has(p.id));tasks=tasks.filter(t=>pids.has(t.projectId));}
       const today=new Date();
       const pStats={total:projs.length,active:projs.filter(p=>p.status==='active').length,completed:projs.filter(p=>p.status==='completed').length,paused:projs.filter(p=>p.status==='paused').length};
       const tStats={total:tasks.length,todo:tasks.filter(t=>t.status==='todo').length,inProgress:tasks.filter(t=>t.status==='in_progress').length,review:tasks.filter(t=>t.status==='review').length,completed:tasks.filter(t=>t.status==='completed').length,overdue:tasks.filter(t=>t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today).length};
@@ -1942,28 +2135,74 @@ function localAPI(action, d) {
     }
     case 'getProjects': {
       if(!u) return {success:false,message:'Hết phiên'};
-      const allTasks=lsGet('tasks');
+      const allTasks=lsGet('tasks');const allMems=lsGet('project_members');
       let projs=lsGet('projects');
-      if(u.role!=='admin'){const pids=new Set(allTasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId).map(t=>t.projectId));projs=projs.filter(p=>pids.has(p.id)||p.managerId===u.userId);}
+      if(u.role!=='admin'){const pids=new Set(allMems.filter(m=>m.userId===u.userId).map(m=>m.projectId));projs=projs.filter(p=>pids.has(p.id));}
       const today=new Date();
-      projs=projs.map(p=>{const pt=allTasks.filter(t=>t.projectId===p.id);return Object.assign({},p,{taskCount:pt.length,completedTasks:pt.filter(t=>t.status==='completed').length,overdueTasks:pt.filter(t=>t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today).length});});
+      projs=projs.map(p=>{const pt=allTasks.filter(t=>t.projectId===p.id);const me=allMems.find(m=>m.projectId===p.id&&m.userId===u.userId);const upr=u.role==='admin'?'admin':(me?me.projectRole:null);return Object.assign({},p,{taskCount:pt.length,completedTasks:pt.filter(t=>t.status==='completed').length,overdueTasks:pt.filter(t=>t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today).length,userProjectRole:upr,memberCount:allMems.filter(m=>m.projectId===p.id).length});});
       return {success:true,data:projs};
     }
     case 'getProjectById': {const p=lsGet('projects').find(p=>p.id===d.id);return p?{success:true,data:p}:{success:false,message:'Không tìm thấy'};}
+    case 'getProjectMembers': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const mems=lsGet('project_members').filter(m=>m.projectId===d.projectId);
+      const users=lsGet('users');
+      return {success:true,data:mems.map(m=>{const uu=users.find(x=>x.id===m.userId)||{};return Object.assign({},m,{systemRole:uu.role||'',email:uu.email||'',department:uu.department||'',userName:m.userName||uu.name||''});})};
+    }
+    case 'addProjectMember': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const mems=lsGet('project_members');
+      const canManage=u.role==='admin'||mems.find(m=>m.projectId===d.projectId&&m.userId===u.userId&&m.projectRole==='owner');
+      if(!canManage) return {success:false,message:'Không có quyền quản lý thành viên'};
+      if(mems.find(m=>m.projectId===d.projectId&&m.userId===d.userId)) return {success:false,message:'Người dùng đã là thành viên'};
+      const tgt=lsGet('users').find(x=>x.id===d.userId);
+      if(!tgt) return {success:false,message:'Người dùng không tồn tại'};
+      mems.push({id:demoId(),projectId:d.projectId,userId:d.userId,userName:tgt.name,projectRole:d.projectRole||'member',addedAt:demoNow(),addedBy:u.userId});
+      lsSet('project_members',mems);
+      const proj=lsGet('projects').find(p=>p.id===d.projectId);
+      demoAddNotif(d.userId,'Được thêm vào dự án','Bạn được thêm vào "'+(proj?proj.name:'')+'": '+(d.projectRole||'member'),'project',d.projectId,'project');
+      return {success:true,message:'Thêm thành viên thành công'};
+    }
+    case 'updateProjectMember': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const mems=lsGet('project_members');
+      const canManage=u.role==='admin'||mems.find(m=>m.projectId===d.projectId&&m.userId===u.userId&&m.projectRole==='owner');
+      if(!canManage) return {success:false,message:'Không có quyền'};
+      const idx=mems.findIndex(m=>m.projectId===d.projectId&&m.userId===d.userId);
+      if(idx===-1) return {success:false,message:'Không tìm thấy'};
+      if(mems[idx].projectRole==='owner'&&d.projectRole!=='owner'&&mems.filter(m=>m.projectId===d.projectId&&m.projectRole==='owner').length<=1) return {success:false,message:'Cần ít nhất 1 Quản lý dự án'};
+      mems[idx].projectRole=d.projectRole;lsSet('project_members',mems);
+      return {success:true,message:'Cập nhật quyền thành công'};
+    }
+    case 'removeProjectMember': {
+      if(!u) return {success:false,message:'Hết phiên'};
+      const mems=lsGet('project_members');
+      const canManage=u.role==='admin'||mems.find(m=>m.projectId===d.projectId&&m.userId===u.userId&&m.projectRole==='owner');
+      if(!canManage) return {success:false,message:'Không có quyền'};
+      const entry=mems.find(m=>m.projectId===d.projectId&&m.userId===d.userId);
+      if(!entry) return {success:false,message:'Không tìm thấy'};
+      if(entry.projectRole==='owner'&&mems.filter(m=>m.projectId===d.projectId&&m.projectRole==='owner').length<=1) return {success:false,message:'Không thể xóa Quản lý dự án duy nhất'};
+      lsSet('project_members',mems.filter(m=>!(m.projectId===d.projectId&&m.userId===d.userId)));
+      return {success:true,message:'Đã xóa thành viên'};
+    }
     case 'createProject': {
       if(!u) return {success:false,message:'Hết phiên'};
       if(u.role==='employee') return {success:false,message:'Không có quyền'};
       const projs=lsGet('projects');
       if(d.code&&projs.find(p=>p.code===d.code)) return {success:false,message:'Mã dự án đã tồn tại'};
       const id=demoId();const ts=demoNow();
-      projs.push({id,code:d.code||'',name:d.name,description:d.description||'',managerId:d.managerId||u.userId,managerName:d.managerName||u.name,startDate:d.startDate||'',endDate:d.endDate||'',status:d.status||'active',budget:Number(d.budget)||0,createdAt:ts,updatedAt:ts});
+      const mgrid=d.managerId||u.userId;const mgrname=d.managerName||u.name;
+      projs.push({id,code:d.code||'',name:d.name,description:d.description||'',managerId:mgrid,managerName:mgrname,startDate:d.startDate||'',endDate:d.endDate||'',status:d.status||'active',budget:Number(d.budget)||0,createdAt:ts,updatedAt:ts});
       lsSet('projects',projs);
-      if(d.managerId&&d.managerId!==u.userId) demoAddNotif(d.managerId,'Dự án mới được giao','Bạn quản lý dự án: '+d.name,'project',id,'project');
+      const mems=lsGet('project_members');
+      mems.push({id:demoId(),projectId:id,userId:u.userId,userName:u.name,projectRole:'owner',addedAt:ts,addedBy:u.userId});
+      if(mgrid!==u.userId){const mgru=lsGet('users').find(x=>x.id===mgrid);if(mgru)mems.push({id:demoId(),projectId:id,userId:mgrid,userName:mgru.name,projectRole:'owner',addedAt:ts,addedBy:u.userId});demoAddNotif(mgrid,'Dự án mới được giao','Bạn quản lý dự án: '+d.name,'project',id,'project');}
+      lsSet('project_members',mems);
       return {success:true,id,message:'Tạo dự án thành công'};
     }
     case 'updateProject': {
       if(!u) return {success:false,message:'Hết phiên'};
-      if(u.role==='employee') return {success:false,message:'Không có quyền'};
+      {const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===d.id&&m.userId===u.userId);if(u.role!=='admin'&&(!me||me.projectRole!=='owner')) return {success:false,message:'Bạn không có quyền chỉnh sửa dự án này'};}
       const projs=lsGet('projects');const idx=projs.findIndex(p=>p.id===d.id);
       if(idx===-1) return {success:false,message:'Không tìm thấy'};
       Object.assign(projs[idx],{code:d.code,name:d.name,description:d.description,managerId:d.managerId,managerName:d.managerName,startDate:d.startDate,endDate:d.endDate,status:d.status,budget:Number(d.budget)||0,updatedAt:demoNow()});
@@ -1974,19 +2213,21 @@ function localAPI(action, d) {
       if(u.role!=='admin') return {success:false,message:'Chỉ Admin'};
       lsSet('projects',lsGet('projects').filter(p=>p.id!==d.id));
       lsSet('tasks',lsGet('tasks').filter(t=>t.projectId!==d.id));
+      lsSet('project_members',lsGet('project_members').filter(m=>m.projectId!==d.id));
       return {success:true,message:'Xóa thành công'};
     }
     case 'getTasks': {
       if(!u) return {success:false,message:'Hết phiên'};
       let tasks=lsGet('tasks');
+      if(u.role!=='admin'){const mems=lsGet('project_members');const pids=new Set(mems.filter(m=>m.userId===u.userId).map(m=>m.projectId));tasks=tasks.filter(t=>pids.has(t.projectId));}
       if(d.projectId) tasks=tasks.filter(t=>t.projectId===d.projectId);
-      if(u.role==='employee') tasks=tasks.filter(t=>t.assigneeId===u.userId||t.reviewerId===u.userId);
       const today=new Date();
       return {success:true,data:tasks.map(t=>Object.assign({},t,{isOverdue:t.status!=='completed'&&t.dueDate&&new Date(t.dueDate)<today}))};
     }
     case 'getTaskById': {const t=lsGet('tasks').find(t=>t.id===d.id);return t?{success:true,data:t}:{success:false,message:'Không tìm thấy'};}
     case 'createTask': {
       if(!u) return {success:false,message:'Hết phiên'};
+      {const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===d.projectId&&m.userId===u.userId);if(u.role!=='admin'&&(!me||me.projectRole==='viewer')) return {success:false,message:'Bạn không có quyền tạo công việc trong dự án này'};}
       const tasks=lsGet('tasks');const id=demoId();const ts=demoNow();
       tasks.push({id,projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description||'',assigneeId:d.assigneeId||'',assigneeName:d.assigneeName||'',reviewerId:d.reviewerId||'',reviewerName:d.reviewerName||'',startDate:d.startDate||'',dueDate:d.dueDate||'',status:d.status||'todo',priority:d.priority||'medium',estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,createdAt:ts,updatedAt:ts,createdBy:u.userId});
       lsSet('tasks',tasks);
@@ -1999,7 +2240,7 @@ function localAPI(action, d) {
       const tasks=lsGet('tasks');const idx=tasks.findIndex(t=>t.id===d.id);
       if(idx===-1) return {success:false,message:'Không tìm thấy'};
       const old=tasks[idx];
-      if(u.role==='employee'&&old.assigneeId!==u.userId&&old.reviewerId!==u.userId) return {success:false,message:'Không có quyền'};
+      if(u.role!=='admin'){const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===old.projectId&&m.userId===u.userId);const pr=me?me.projectRole:null;if(!pr) return {success:false,message:'Không có quyền truy cập dự án'};if(pr==='viewer') return {success:false,message:'Bạn chỉ có quyền xem'};if(pr==='member'&&old.assigneeId!==u.userId&&old.reviewerId!==u.userId) return {success:false,message:'Thành viên chỉ được sửa công việc được phân công'};}
       Object.assign(tasks[idx],{projectId:d.projectId,projectName:d.projectName,title:d.title,description:d.description,assigneeId:d.assigneeId,assigneeName:d.assigneeName,reviewerId:d.reviewerId,reviewerName:d.reviewerName,startDate:d.startDate,dueDate:d.dueDate,status:d.status,priority:d.priority,estimatedCost:Number(d.estimatedCost)||0,actualCost:Number(d.actualCost)||0,progress:Number(d.progress)||0,updatedAt:demoNow()});
       lsSet('tasks',tasks);
       if(d.status==='review'&&old.status!=='review'&&old.reviewerId) demoAddNotif(old.reviewerId,'Cần kiểm duyệt','"'+(d.title||old.title)+'" cần kiểm duyệt','task',d.id,'task');
@@ -2007,7 +2248,7 @@ function localAPI(action, d) {
     }
     case 'deleteTask': {
       if(!u) return {success:false,message:'Hết phiên'};
-      if(u.role==='employee') return {success:false,message:'Không có quyền'};
+      if(u.role!=='admin'){const tsk=lsGet('tasks').find(t=>t.id===d.id);const mems=lsGet('project_members');const me=mems.find(m=>m.projectId===(tsk?tsk.projectId:'')&&m.userId===u.userId);if(!me||me.projectRole!=='owner') return {success:false,message:'Chỉ Quản lý dự án mới có thể xóa công việc'};}
       lsSet('tasks',lsGet('tasks').filter(t=>t.id!==d.id));
       return {success:true,message:'Xóa thành công'};
     }
@@ -2105,6 +2346,21 @@ function seedDemoData() {
     {id:demoId(),userId:empId,title:'Công việc mới được giao',message:'Bạn được giao: "Phát triển API sản phẩm" trong Website TMĐT',type:'task',isRead:false,relatedId:'',relatedType:'task',createdAt:demoNow()},
     {id:demoId(),userId:mgrId,title:'Công việc cần kiểm duyệt',message:'"Tích hợp cổng thanh toán" cần kiểm duyệt',type:'task',isRead:false,relatedId:'',relatedType:'task',createdAt:demoNow()},
     {id:demoId(),userId:adminId,title:'Dự án mới',message:'Bạn quản lý dự án: Ứng dụng Mobile CRM',type:'project',isRead:true,relatedId:p2,relatedType:'project',createdAt:demoNow()}
+  ]);
+  // Project-level member assignments
+  lsSet('project_members',[
+    // DA001 - Website TMĐT: mgrId=owner, empId=member, adminId=owner
+    {id:demoId(),projectId:p1,userId:mgrId,userName:'Nguyễn Văn Manager',projectRole:'owner',addedAt:t1,addedBy:'system'},
+    {id:demoId(),projectId:p1,userId:empId,userName:'Trần Thị Employee',projectRole:'member',addedAt:t1,addedBy:'system'},
+    {id:demoId(),projectId:p1,userId:adminId,userName:'Administrator',projectRole:'member',addedAt:t1,addedBy:'system'},
+    // DA002 - Mobile CRM: adminId=owner, mgrId=member, empId=member
+    {id:demoId(),projectId:p2,userId:adminId,userName:'Administrator',projectRole:'owner',addedAt:t1,addedBy:'system'},
+    {id:demoId(),projectId:p2,userId:mgrId,userName:'Nguyễn Văn Manager',projectRole:'member',addedAt:t1,addedBy:'system'},
+    {id:demoId(),projectId:p2,userId:empId,userName:'Trần Thị Employee',projectRole:'member',addedAt:t1,addedBy:'system'},
+    // DA003 - ERP Nội bộ: mgrId=owner, empId=member, adminId=viewer
+    {id:demoId(),projectId:p3,userId:mgrId,userName:'Nguyễn Văn Manager',projectRole:'owner',addedAt:t1,addedBy:'system'},
+    {id:demoId(),projectId:p3,userId:empId,userName:'Trần Thị Employee',projectRole:'member',addedAt:t1,addedBy:'system'},
+    {id:demoId(),projectId:p3,userId:adminId,userName:'Administrator',projectRole:'viewer',addedAt:t1,addedBy:'system'}
   ]);
   localStorage.setItem('pm_seeded','1');
 }
